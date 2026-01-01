@@ -1,0 +1,19 @@
+{
+  "name": "horizn-qq-bot",
+  "version": "1.0.0",
+  "description": "HORIZN 地平线 QQ 群机器人 - 踢出审核回归查询",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "@supabase/supabase-js": "^2.45.0",
+    "dotenv": "^16.4.5"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

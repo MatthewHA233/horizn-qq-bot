@@ -203,10 +203,10 @@ async function handleReportCommand(text, userId, messageId, senderName, client, 
     return true
   }
 
-  console.log(`[调试] ${senderName}(${userId}) 触发 ${dateStr} 播报`)
+  console.log(`[调试] ${senderName}(${userId}) 触发 ${dateStr} 播报（私聊模式）`)
   await client.replyPrivateMessage(userId, messageId, `正在生成 ${dateStr} 播报，稍候...`)
 
-  runReportForDate(client, syncGroupId, dateStr).catch(err => {
+  runReportForDate(client, syncGroupId, dateStr, userId).catch(err => {
     console.error(`[调试] 播报失败:`, err.message)
     client.replyPrivateMessage(userId, messageId, `播报失败：${err.message}`).catch(() => {})
   })

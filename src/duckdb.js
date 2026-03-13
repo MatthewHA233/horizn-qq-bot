@@ -77,7 +77,9 @@ export async function getFullDayActivity(dateStr) {
 
       timestampSet.add(timeStr)
       if (!playerMap.has(player_id)) playerMap.set(player_id, {})
-      playerMap.get(player_id)[timeStr] = { value: weekly, status }
+      // DuckDB 存储中文状态：'在线' → 'online'，'离线' → 'offline'
+      const normalStatus = status === '在线' ? 'online' : status === '离线' ? 'offline' : 'unknown'
+      playerMap.get(player_id)[timeStr] = { value: weekly, status: normalStatus }
     }
 
     const timestamps = Array.from(timestampSet).sort()

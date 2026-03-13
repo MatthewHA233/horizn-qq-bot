@@ -15,17 +15,24 @@
  */
 function calculateTimestampActivity(members, timestamps) {
   const activityMap = new Map()
+
+  // 为每个成员预先建立 prevValue 映射，确保跨间隙比较正确
+  const prevValues = new Map()  // memberId → lastKnownValue
+
   for (let i = 0; i < timestamps.length; i++) {
     const ts = timestamps[i]
-    const prevTs = i > 0 ? timestamps[i - 1] : null
     let activeCount = 0
+
     for (const member of members) {
       const entry = member.timeseries[ts]
-      const prevEntry = prevTs ? member.timeseries[prevTs] : null
-      if (entry && prevEntry && entry.value != null && prevEntry.value != null) {
-        if (entry.value > prevEntry.value) activeCount++
+      const prev = prevValues.get(member.playerId) ?? null
+
+      if (entry && entry.value != null) {
+        if (prev !== null && entry.value > prev) activeCount++
+        prevValues.set(member.playerId, entry.value)
       }
     }
+
     activityMap.set(ts, activeCount)
   }
   return activityMap
@@ -111,6 +118,7 @@ export function analyzeBotDetection(members, timestamps) {
     let onlineCount = 0
     let activeCount = 0
     let totalIncrease = 0
+    let prevValue = null  // 持久化上次有效值，跨间隙比较
 
     for (let i = 0; i < timestamps.length; i++) {
       const ts = timestamps[i]
@@ -119,13 +127,12 @@ export function analyzeBotDetection(members, timestamps) {
 
       if (entry.status === 'online') onlineCount++
 
-      if (i > 0) {
-        const prevEntry = member.timeseries[timestamps[i - 1]]
-        if (entry.value != null && prevEntry?.value != null && entry.value > prevEntry.value) {
-          activeCount++
-          totalIncrease += entry.value - prevEntry.value
-        }
+      if (prevValue !== null && entry.value != null && entry.value > prevValue) {
+        activeCount++
+        totalIncrease += entry.value - prevValue
       }
+
+      if (entry.value != null) prevValue = entry.value
     }
 
     const onlineTime = onlineCount * 5

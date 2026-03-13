@@ -53,7 +53,7 @@ function scheduleNextReport(callback) {
 /**
  * 执行入离队播报
  */
-async function runJoinLeaveReport(client, groupId, dateLabel, startUTC, endUTC) {
+async function runJoinLeaveReport(sendFn, dateLabel, startUTC, endUTC) {
   const { joins, leaves } = await getDailyEvents(startUTC, endUTC)
 
   if (joins.length === 0 && leaves.length === 0) {
@@ -80,14 +80,14 @@ async function runJoinLeaveReport(client, groupId, dateLabel, startUTC, endUTC) 
     })
   }
 
-  await client.sendGroupMessage(groupId, lines.join('\n'))
+  await sendFn(lines.join('\n'))
   console.log(`[播报] ${dateLabel} 入离队播报已发送`)
 }
 
 /**
  * 执行脚本号检测播报
  */
-async function runBotDetectionReport(client, groupId, dateLabel, dateStr) {
+async function runBotDetectionReport(sendFn, dateLabel, dateStr) {
   console.log(`[播报] 开始 ${dateLabel} 脚本号检测...`)
 
   // 并行获取：全天活跃度数据 + 成员名字映射
@@ -146,7 +146,7 @@ async function runBotDetectionReport(client, groupId, dateLabel, dateStr) {
     lines.push(`…还有 ${suspects.length - 8} 人`)
   }
 
-  await client.sendGroupMessage(groupId, lines.join('\n'))
+  await sendFn(lines.join('\n'))
   console.log(`[播报] ${dateLabel} 脚本号预警已发送`)
 }
 
@@ -154,30 +154,35 @@ async function runBotDetectionReport(client, groupId, dateLabel, dateStr) {
  * 从 YYYY-MM-DD 字符串计算播报所需的时间范围和标签
  */
 function buildDateRange(dateStr) {
-  const next = new Date(new Date(`${dateStr}T00:00:00+08:00`).getTime() + 24 * 60 * 60 * 1000)
-  const nextStr = next.toISOString().slice(0, 10)
-  const startUTC = new Date(`${dateStr}T00:00:00+08:00`).toISOString()
-  const endUTC = new Date(`${nextStr}T00:00:00+08:00`).toISOString()
-  const d = new Date(`${dateStr}T00:00:00+08:00`)
-  const dateLabel = `${d.getMonth() + 1}月${d.getDate()}日`
+  const startMs = new Date(`${dateStr}T00:00:00+08:00`).getTime()
+  const startUTC = new Date(startMs).toISOString()
+  const endUTC = new Date(startMs + 24 * 60 * 60 * 1000).toISOString()
+  const [, m, d] = dateStr.split('-')
+  const dateLabel = `${parseInt(m)}月${parseInt(d)}日`
   return { startUTC, endUTC, dateLabel }
 }
 
 /**
  * 对指定北京日期执行完整播报（入离队 + 脚本号检测）
  * @param {object} client
- * @param {number} groupId
+ * @param {number} groupId - 正常播报目标群号
  * @param {string} dateStr - 'YYYY-MM-DD' 北京时间日期
+ * @param {number|null} debugUserId - 调试模式：将消息发到该私聊而非群
  */
-export async function runReportForDate(client, groupId, dateStr) {
+export async function runReportForDate(client, groupId, dateStr, debugUserId = null) {
   const { startUTC, endUTC, dateLabel } = buildDateRange(dateStr)
-  console.log(`[播报] 开始 ${dateLabel}（${dateStr}）播报...`)
+  console.log(`[播报] 开始 ${dateLabel}（${dateStr}）播报${debugUserId ? `（调试→私聊${debugUserId}）` : ''}...`)
 
-  await runJoinLeaveReport(client, groupId, dateLabel, startUTC, endUTC).catch(err =>
+  // 根据是否调试模式决定发送目标
+  const sendFn = debugUserId
+    ? (text) => client.sendPrivateMessage(debugUserId, text)
+    : (text) => client.sendGroupMessage(groupId, text)
+
+  await runJoinLeaveReport(sendFn, dateLabel, startUTC, endUTC).catch(err =>
     console.error('[播报] 入离队播报失败:', err.message)
   )
 
-  await runBotDetectionReport(client, groupId, dateLabel, dateStr).catch(err =>
+  await runBotDetectionReport(sendFn, dateLabel, dateStr).catch(err =>
     console.error('[播报] 脚本号检测失败:', err.message)
   )
 }

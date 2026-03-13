@@ -1,11 +1,15 @@
 /**
- * 每日入离队播报
- * 每天北京时间 01:00 播报前一天的入离队情况
+ * 每日入离队播报 + 脚本号预警检测
+ * 每天北京时间 01:00 执行：
+ *   1. 播报前一天的入离队情况
+ *   2. 对前一天的活跃度数据运行脚本号检测，若有可疑成员则发送预警
  */
-import { getDailyEvents } from './supabase.js'
+import { getDailyEvents, getActiveMembersMap } from './supabase.js'
+import { getFullDayActivity } from './duckdb.js'
+import { analyzeBotDetection, filterSuspiciousMembers, formatDuration } from './botDetection.js'
 
 /**
- * 获取昨天（北京时间）的 UTC 时间范围和日期标签
+ * 获取昨天（北京时间）的 UTC 时间范围、日期标签和北京日期字符串
  */
 function getYesterdayBeijingRange() {
   const now = new Date()
@@ -20,7 +24,7 @@ function getYesterdayBeijingRange() {
   const d = new Date(`${bjYesterdayStr}T00:00:00Z`)
   const dateLabel = `${d.getUTCMonth() + 1}月${d.getUTCDate()}日`
 
-  return { startUTC, endUTC, dateLabel }
+  return { startUTC, endUTC, dateLabel, dateStr: bjYesterdayStr }
 }
 
 /**
@@ -47,12 +51,9 @@ function scheduleNextReport(callback) {
 }
 
 /**
- * 执行一次播报
+ * 执行入离队播报
  */
-async function runDailyReport(client, groupId) {
-  const { startUTC, endUTC, dateLabel } = getYesterdayBeijingRange()
-  console.log(`[播报] 生成 ${dateLabel} 入离队播报...`)
-
+async function runJoinLeaveReport(client, groupId, dateLabel, startUTC, endUTC) {
   const { joins, leaves } = await getDailyEvents(startUTC, endUTC)
 
   if (joins.length === 0 && leaves.length === 0) {
@@ -80,7 +81,91 @@ async function runDailyReport(client, groupId) {
   }
 
   await client.sendGroupMessage(groupId, lines.join('\n'))
-  console.log(`[播报] ${dateLabel} 播报已发送`)
+  console.log(`[播报] ${dateLabel} 入离队播报已发送`)
+}
+
+/**
+ * 执行脚本号检测播报
+ */
+async function runBotDetectionReport(client, groupId, dateLabel, dateStr) {
+  console.log(`[播报] 开始 ${dateLabel} 脚本号检测...`)
+
+  // 并行获取：全天活跃度数据 + 成员名字映射
+  const [activityData, memberMap] = await Promise.all([
+    getFullDayActivity(dateStr),
+    getActiveMembersMap().catch(err => {
+      console.error('[播报] 成员名字获取失败:', err.message)
+      return new Map()
+    })
+  ])
+
+  if (!activityData) {
+    console.log(`[播报] ${dateLabel} 无活跃度数据，跳过脚本号检测`)
+    return
+  }
+
+  const { timestamps, players } = activityData
+
+  // 给每个玩家附上名字和编号
+  const members = players.map(p => {
+    const info = memberMap.get(p.playerId)
+    return {
+      playerId: p.playerId,
+      name: info?.name || p.playerId,
+      memberNumber: info?.memberNumber || '?',
+      timeseries: p.timeseries
+    }
+  })
+
+  console.log(`[播报] 脚本号检测：${members.length} 名成员，${timestamps.length} 个时间点`)
+
+  const results = analyzeBotDetection(members, timestamps)
+  const suspects = filterSuspiciousMembers(results)
+
+  if (suspects.length === 0) {
+    console.log(`[播报] ${dateLabel} 未检测到可疑脚本号`)
+    return
+  }
+
+  console.log(`[播报] ${dateLabel} 检测到 ${suspects.length} 名可疑成员`)
+
+  const lines = [`🤖 ${dateLabel} 脚本号预警`, `检测到 ${suspects.length} 名可疑成员：`]
+
+  const display = suspects.slice(0, 8)
+  display.forEach((s, idx) => {
+    const nameStr = s.name !== s.playerId ? `${s.name}` : s.playerId
+    const numStr = s.memberNumber !== '?' ? `（${s.memberNumber}）` : ''
+    lines.push(``)
+    lines.push(`#${idx + 1} ${nameStr}${numStr}`)
+    lines.push(`  可疑度 ${s.botScore.toFixed(2)}  异常时间 ${s.unusualTimeScore.toFixed(2)}`)
+    lines.push(`  在线 ${formatDuration(s.onlineTime)}  活跃 ${formatDuration(s.activeTime)}  效率 ${s.avgIncreasePerInterval.toFixed(1)}/帧`)
+  })
+
+  if (suspects.length > 8) {
+    lines.push(``)
+    lines.push(`…还有 ${suspects.length - 8} 人`)
+  }
+
+  await client.sendGroupMessage(groupId, lines.join('\n'))
+  console.log(`[播报] ${dateLabel} 脚本号预警已发送`)
+}
+
+/**
+ * 执行完整每日播报（入离队 + 脚本号检测）
+ */
+async function runDailyReport(client, groupId) {
+  const { startUTC, endUTC, dateLabel, dateStr } = getYesterdayBeijingRange()
+  console.log(`[播报] 开始 ${dateLabel} 每日播报...`)
+
+  // 入离队播报（错误不影响后续）
+  await runJoinLeaveReport(client, groupId, dateLabel, startUTC, endUTC).catch(err =>
+    console.error('[播报] 入离队播报失败:', err.message)
+  )
+
+  // 脚本号检测播报（错误不影响整体）
+  await runBotDetectionReport(client, groupId, dateLabel, dateStr).catch(err =>
+    console.error('[播报] 脚本号检测失败:', err.message)
+  )
 }
 
 /**

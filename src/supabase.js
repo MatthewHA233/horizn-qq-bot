@@ -30,6 +30,29 @@ export async function syncQQMembers(members) {
 }
 
 /**
+ * 获取全体现役成员的名字和编号映射表
+ * 用于脚本号检测时附加成员信息
+ * @returns {Promise<Map<string, {name: string, memberNumber: string}>>}
+ */
+export async function getActiveMembersMap() {
+  if (!supabase) throw new Error('数据库未初始化')
+
+  const { data, error } = await supabase.rpc('horizn_get_members')
+  if (error) throw new Error(`成员列表查询失败: ${error.message}`)
+
+  const map = new Map()
+  if (data) {
+    data.forEach(m => {
+      map.set(m.player_id, {
+        name: m.primary_name || m.player_id,
+        memberNumber: m.member_number || '?'
+      })
+    })
+  }
+  return map
+}
+
+/**
  * 查询指定 UTC 时间范围内的入离队事件（附带成员主名字）
  * @param {string} startUTC - ISO 字符串
  * @param {string} endUTC   - ISO 字符串

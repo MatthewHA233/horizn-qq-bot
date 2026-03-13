@@ -5,6 +5,7 @@
  */
 import { getPlayerFullInfo } from './supabase.js'
 import { getPlayerActivity } from './duckdb.js'
+import { runReportForDate } from './reporter.js'
 
 /**
  * player_id 正则表达式
@@ -186,17 +187,48 @@ async function handleGroupMessage(event, client, listenGroups) {
 }
 
 /**
+ * 处理调试播报命令：/report YYYY-MM-DD
+ * 在私聊中触发，播报发送到 syncGroupId 群
+ * @returns {boolean} 是否消费了本条消息
+ */
+async function handleReportCommand(text, userId, messageId, senderName, client, config) {
+  const match = text.match(/^\/report\s+(\d{4}-\d{2}-\d{2})$/)
+  if (!match) return false
+
+  const dateStr = match[1]
+  const syncGroupId = config.syncGroupId
+
+  if (!syncGroupId) {
+    await client.replyPrivateMessage(userId, messageId, '未配置 QQ_GROUP_ID，无法发送播报')
+    return true
+  }
+
+  console.log(`[调试] ${senderName}(${userId}) 触发 ${dateStr} 播报`)
+  await client.replyPrivateMessage(userId, messageId, `正在生成 ${dateStr} 播报，稍候...`)
+
+  runReportForDate(client, syncGroupId, dateStr).catch(err => {
+    console.error(`[调试] 播报失败:`, err.message)
+    client.replyPrivateMessage(userId, messageId, `播报失败：${err.message}`).catch(() => {})
+  })
+
+  return true
+}
+
+/**
  * 处理私聊消息
  */
-async function handlePrivateMessage(event, client, allowPrivateUsers) {
+async function handlePrivateMessage(event, client, config) {
   const userId = event.user_id
   const messageId = event.message_id
   const senderName = event.sender?.nickname || '未知'
 
-  if (allowPrivateUsers.size === 0 || !allowPrivateUsers.has(userId)) return
+  if (config.allowPrivateUsers.size === 0 || !config.allowPrivateUsers.has(userId)) return
 
   const text = extractTextFromMessage(event.message)
   if (!text) return
+
+  // 优先检测调试命令
+  if (await handleReportCommand(text, userId, messageId, senderName, client, config)) return
 
   const playerIds = extractPlayerIds(text)
   if (playerIds.length === 0) return
@@ -222,7 +254,7 @@ export async function handleMessage(event, client, config) {
   if (event.message_type === 'group') {
     await handleGroupMessage(event, client, config.listenGroups)
   } else if (event.message_type === 'private') {
-    await handlePrivateMessage(event, client, config.allowPrivateUsers)
+    await handlePrivateMessage(event, client, config)
   }
 }
 

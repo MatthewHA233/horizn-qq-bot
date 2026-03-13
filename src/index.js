@@ -49,7 +49,7 @@ async function main() {
   })
 
   // 3. 注册消息处理器
-  const config = { listenGroups, allowPrivateUsers }
+  const config = { listenGroups, allowPrivateUsers, syncGroupId }
   const handler = createMessageHandler(client, config)
   client.onMessage(handler)
 

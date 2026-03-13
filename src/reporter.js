@@ -151,21 +151,43 @@ async function runBotDetectionReport(client, groupId, dateLabel, dateStr) {
 }
 
 /**
- * 执行完整每日播报（入离队 + 脚本号检测）
+ * 从 YYYY-MM-DD 字符串计算播报所需的时间范围和标签
  */
-async function runDailyReport(client, groupId) {
-  const { startUTC, endUTC, dateLabel, dateStr } = getYesterdayBeijingRange()
-  console.log(`[播报] 开始 ${dateLabel} 每日播报...`)
+function buildDateRange(dateStr) {
+  const next = new Date(new Date(`${dateStr}T00:00:00+08:00`).getTime() + 24 * 60 * 60 * 1000)
+  const nextStr = next.toISOString().slice(0, 10)
+  const startUTC = new Date(`${dateStr}T00:00:00+08:00`).toISOString()
+  const endUTC = new Date(`${nextStr}T00:00:00+08:00`).toISOString()
+  const d = new Date(`${dateStr}T00:00:00+08:00`)
+  const dateLabel = `${d.getMonth() + 1}月${d.getDate()}日`
+  return { startUTC, endUTC, dateLabel }
+}
 
-  // 入离队播报（错误不影响后续）
+/**
+ * 对指定北京日期执行完整播报（入离队 + 脚本号检测）
+ * @param {object} client
+ * @param {number} groupId
+ * @param {string} dateStr - 'YYYY-MM-DD' 北京时间日期
+ */
+export async function runReportForDate(client, groupId, dateStr) {
+  const { startUTC, endUTC, dateLabel } = buildDateRange(dateStr)
+  console.log(`[播报] 开始 ${dateLabel}（${dateStr}）播报...`)
+
   await runJoinLeaveReport(client, groupId, dateLabel, startUTC, endUTC).catch(err =>
     console.error('[播报] 入离队播报失败:', err.message)
   )
 
-  // 脚本号检测播报（错误不影响整体）
   await runBotDetectionReport(client, groupId, dateLabel, dateStr).catch(err =>
     console.error('[播报] 脚本号检测失败:', err.message)
   )
+}
+
+/**
+ * 执行完整每日播报（入离队 + 脚本号检测）
+ */
+async function runDailyReport(client, groupId) {
+  const { dateStr } = getYesterdayBeijingRange()
+  await runReportForDate(client, groupId, dateStr)
 }
 
 /**

@@ -1,5 +1,5 @@
 /**
- * Supabase 踢出记录查询服务
+ * Supabase 成员档案查询 + QQ群同步服务
  */
 import { createClient } from '@supabase/supabase-js'
 
@@ -14,146 +14,150 @@ export function initSupabase(url, serviceKey) {
 }
 
 /**
- * 查询玩家的踢出状态
- * @param {string} playerId - 玩家 ID（大写字母+数字，6-16位）
- * @returns {Promise<{status: string, message: string, data?: object}>}
- *
- * 返回状态：
- * - 'pass': 通过（无踢出记录或已过冷却期）
- * - 'cooling': 冷却期中
- * - 'blacklist': 黑名单（预留）
- * - 'error': 查询错误
+ * 同步 QQ 群成员到数据库
+ * @param {Array} members - NapCat 返回的成员列表
+ * @returns {Promise<{success, inserted, updated, left, total}>}
  */
-export async function checkPlayerStatus(playerId) {
-  if (!supabase) {
-    return { status: 'error', message: '数据库未初始化' }
-  }
+export async function syncQQMembers(members) {
+  if (!supabase) throw new Error('数据库未初始化')
 
-  try {
-    console.log(`[Supabase] 查询 player_id: ${playerId}`)
+  const { data, error } = await supabase.rpc('horizn_sync_qq_members', {
+    p_members: members
+  })
 
-    // 1. 查询该玩家的踢出事件（离队 + is_kicked = true）
-    const { data: kickedEvents, error: kickedError } = await supabase
-      .from('horizn_membership_events')
-      .select('id, player_id, event_time, is_kicked')
-      .eq('player_id', playerId)
-      .eq('event_type', 'leave')
-      .eq('is_kicked', true)
-      .order('event_time', { ascending: false })
-      .limit(1)
-
-    console.log(`[Supabase] 踢出记录查询结果:`, kickedEvents, kickedError)
-
-    if (kickedError) {
-      console.error('[Supabase] 查询踢出事件失败:', kickedError)
-      return { status: 'error', message: '查询失败' }
-    }
-
-    // 没有踢出记录
-    if (!kickedEvents || kickedEvents.length === 0) {
-      return {
-        status: 'pass',
-        message: '通过',
-        data: { playerId, hasKickRecord: false }
-      }
-    }
-
-    const latestKick = kickedEvents[0]
-    const kickedAt = new Date(latestKick.event_time)
-    const rejoinAllowedAt = new Date(kickedAt.getTime() + 30 * 24 * 60 * 60 * 1000) // 30天后
-    const now = new Date()
-
-    console.log(`[Supabase] 踢出时间: ${kickedAt.toISOString()}`)
-    console.log(`[Supabase] 可归队时间: ${rejoinAllowedAt.toISOString()}`)
-    console.log(`[Supabase] 当前时间: ${now.toISOString()}`)
-
-    // 2. 检查是否已有踢出后的归队记录
-    const { data: joinEvents, error: joinError } = await supabase
-      .from('horizn_membership_events')
-      .select('id, event_time')
-      .eq('player_id', playerId)
-      .eq('event_type', 'join')
-      .gt('event_time', latestKick.event_time)
-      .order('event_time', { ascending: false })
-      .limit(1)
-
-    console.log(`[Supabase] 归队记录查询结果:`, joinEvents, joinError)
-
-    if (joinError) {
-      console.error('[Supabase] 查询归队事件失败:', joinError)
-    }
-
-    // 如果已经归队
-    if (joinEvents && joinEvents.length > 0) {
-      const rejoinedAt = new Date(joinEvents[0].event_time)
-      const daysAfterKick = Math.ceil((rejoinedAt.getTime() - kickedAt.getTime()) / (1000 * 60 * 60 * 24))
-      const earlyDays = Math.ceil((rejoinAllowedAt.getTime() - rejoinedAt.getTime()) / (1000 * 60 * 60 * 24))
-
-      const kickDateStr = `${kickedAt.getMonth() + 1}.${kickedAt.getDate()}`
-      const rejoinDateStr = `${rejoinedAt.getMonth() + 1}.${rejoinedAt.getDate()}`
-
-      console.log(`[Supabase] 判断: 已归队，提前${earlyDays}天`)
-      return {
-        status: 'early_rejoin',
-        message: `${kickDateStr}被踢，踢后${daysAfterKick}天归队，于${rejoinDateStr}提前${earlyDays}天归队`,
-        data: {
-          playerId,
-          hasKickRecord: true,
-          hasRejoined: true,
-          kickedAt: latestKick.event_time,
-          rejoinedAt: joinEvents[0].event_time,
-          daysAfterKick,
-          earlyDays
-        }
-      }
-    }
-
-    // 3. 判断是否还在冷却期
-    console.log(`[Supabase] 冷却期判断: now(${now.getTime()}) < rejoinAllowedAt(${rejoinAllowedAt.getTime()}) = ${now < rejoinAllowedAt}`)
-    if (now < rejoinAllowedAt) {
-      const daysUntil = Math.ceil((rejoinAllowedAt.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
-      const endDateStr = `${rejoinAllowedAt.getMonth() + 1}.${rejoinAllowedAt.getDate()}`
-
-      return {
-        status: 'cooling',
-        message: `属于被踢冷却期，距离${endDateStr}结束还有${daysUntil}天`,
-        data: {
-          playerId,
-          hasKickRecord: true,
-          kickedAt: latestKick.event_time,
-          rejoinAllowedAt: rejoinAllowedAt.toISOString(),
-          daysUntilRejoin: daysUntil
-        }
-      }
-    }
-
-    // 冷却期已过
-    return {
-      status: 'pass',
-      message: '通过（冷却期已结束）',
-      data: {
-        playerId,
-        hasKickRecord: true,
-        kickedAt: latestKick.event_time,
-        rejoinAllowedAt: rejoinAllowedAt.toISOString(),
-        coolingEnded: true
-      }
-    }
-
-  } catch (err) {
-    console.error('[Supabase] 查询异常:', err)
-    return { status: 'error', message: '查询异常' }
-  }
+  if (error) throw new Error(`同步失败: ${error.message}`)
+  return data
 }
 
 /**
- * 批量查询多个玩家状态
+ * 查询指定 UTC 时间范围内的入离队事件（附带成员主名字）
+ * @param {string} startUTC - ISO 字符串
+ * @param {string} endUTC   - ISO 字符串
  */
-export async function checkMultiplePlayersStatus(playerIds) {
-  const results = []
-  for (const playerId of playerIds) {
-    const result = await checkPlayerStatus(playerId)
-    results.push({ playerId, ...result })
+export async function getDailyEvents(startUTC, endUTC) {
+  if (!supabase) throw new Error('数据库未初始化')
+
+  const { data: events, error } = await supabase
+    .from('horizn_membership_events')
+    .select('player_id, member_id, event_type, is_kicked')
+    .gte('event_time', startUTC)
+    .lt('event_time', endUTC)
+    .order('event_time', { ascending: true })
+
+  if (error) throw new Error(`事件查询失败: ${error.message}`)
+  if (!events || events.length === 0) return { joins: [], leaves: [] }
+
+  // 批量查主名字
+  const memberIds = [...new Set(events.filter(e => e.member_id).map(e => e.member_id))]
+  const nameMap = new Map()
+
+  if (memberIds.length > 0) {
+    const { data: names } = await supabase
+      .from('horizn_name_variants')
+      .select('member_id, name, is_primary, group_index, last_seen')
+      .in('member_id', memberIds)
+      .order('is_primary', { ascending: false })
+      .order('group_index', { ascending: true })
+      .order('last_seen', { ascending: false })
+
+    if (names) {
+      // 每个成员只取排序最靠前的一条
+      names.forEach(n => {
+        if (!nameMap.has(n.member_id)) nameMap.set(n.member_id, n.name)
+      })
+    }
   }
-  return results
+
+  const joins = events
+    .filter(e => e.event_type === 'join')
+    .map(e => ({ player_id: e.player_id, name: nameMap.get(e.member_id) || null }))
+
+  const leaves = events
+    .filter(e => e.event_type === 'leave')
+    .map(e => ({ player_id: e.player_id, name: nameMap.get(e.member_id) || null, is_kicked: e.is_kicked }))
+
+  return { joins, leaves }
+}
+
+/**
+ * 查询玩家完整档案
+ * @param {string} playerId
+ * @returns {Promise<{
+ *   found: 'member' | 'external_blacklist' | 'none',
+ *   member?: object,
+ *   events?: Array,
+ *   qqAccounts?: Array,
+ *   externalBlacklist?: object
+ * }>}
+ */
+export async function getPlayerFullInfo(playerId) {
+  if (!supabase) throw new Error('数据库未初始化')
+
+  console.log(`[Supabase] 查询 player_id: ${playerId}`)
+
+  // 1. 查询成员主表
+  const { data: members, error: memberError } = await supabase
+    .from('horizn_members')
+    .select('id, player_id, member_number, hull_number, hull_date, active, is_second_team, is_blacklisted, blacklist_date, blacklist_note')
+    .eq('player_id', playerId)
+    .limit(1)
+
+  if (memberError) throw new Error(`成员查询失败: ${memberError.message}`)
+
+  if (members && members.length > 0) {
+    const member = members[0]
+
+    // 并行查询入离队历史 + QQ账号 + 主名字
+    const [eventsResult, qqResult, nameResult] = await Promise.all([
+      supabase
+        .from('horizn_membership_events')
+        .select('event_type, event_time, is_kicked')
+        .eq('player_id', playerId)
+        .order('event_time', { ascending: true }),
+      supabase
+        .from('horizn_qq_accounts')
+        .select('qq_id, nickname, card, join_time, left_at')
+        .eq('member_id', member.id)
+        .eq('is_ignored', false)
+        .order('join_time', { ascending: true }),
+      supabase
+        .from('horizn_name_variants')
+        .select('name')
+        .eq('member_id', member.id)
+        .order('is_primary', { ascending: false })
+        .order('group_index', { ascending: true })
+        .order('last_seen', { ascending: false })
+        .limit(1)
+    ])
+
+    if (eventsResult.error) console.error('[Supabase] 事件查询失败:', eventsResult.error)
+    if (qqResult.error) console.error('[Supabase] QQ账号查询失败:', qqResult.error)
+    if (nameResult.error) console.error('[Supabase] 名字查询失败:', nameResult.error)
+
+    return {
+      found: 'member',
+      member,
+      primaryName: nameResult.data?.[0]?.name || null,
+      events: eventsResult.data || [],
+      qqAccounts: qqResult.data || []
+    }
+  }
+
+  // 2. 不在成员表，查询外部黑名单
+  const { data: blacklist, error: blacklistError } = await supabase
+    .from('horizn_blacklist_else')
+    .select('name, player_id, qq_number, note, blacklist_date')
+    .eq('player_id', playerId)
+    .limit(1)
+
+  if (blacklistError) console.error('[Supabase] 外部黑名单查询失败:', blacklistError)
+
+  if (blacklist && blacklist.length > 0) {
+    return {
+      found: 'external_blacklist',
+      externalBlacklist: blacklist[0]
+    }
+  }
+
+  return { found: 'none' }
 }

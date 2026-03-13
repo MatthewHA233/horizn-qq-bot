@@ -194,6 +194,22 @@ export class NapCatClient {
   }
 
   /**
+   * 获取 QQ 群成员列表
+   */
+  async getGroupMemberList(groupId) {
+    const data = await this.callApi('get_group_member_list', { group_id: groupId })
+    return data.map(m => ({
+      qq_id: m.user_id,
+      nickname: m.nickname || '',
+      card: m.card || '',
+      role: m.role || 'member',
+      join_time: m.join_time || 0,
+      last_sent_time: m.last_sent_time || 0,
+      level: m.level || ''
+    }))
+  }
+
+  /**
    * 获取登录信息
    */
   async getLoginInfo() {

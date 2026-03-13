@@ -1,16 +1,13 @@
 /**
  * HORIZN 地平线 QQ 群机器人
- * 踢出审核回归查询
- *
- * 功能：
- * - 监听群消息中的 player_id（大写字母+数字，6-16位）
- * - 支持私聊查询（需配置白名单）
- * - 自动回复查询结果：通过 / 冷却期 / 黑名单
+ * 成员档案查询 + QQ群成员同步
  */
 import 'dotenv/config'
 import { NapCatClient } from './napcat.js'
 import { initSupabase } from './supabase.js'
 import { createMessageHandler } from './handler.js'
+import { startSyncLoop } from './sync.js'
+import { startDailyReport } from './reporter.js'
 
 // 配置检查
 const requiredEnvs = ['NAPCAT_WS_URL', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY']
@@ -31,6 +28,7 @@ function parseNumberList(envValue) {
 
 const listenGroups = parseNumberList(process.env.LISTEN_GROUPS)
 const allowPrivateUsers = parseNumberList(process.env.ALLOW_PRIVATE_USERS)
+const syncGroupId = process.env.QQ_GROUP_ID ? parseInt(process.env.QQ_GROUP_ID) : null
 
 console.log('========================================')
 console.log('  HORIZN 地平线 QQ 群机器人')
@@ -74,6 +72,14 @@ async function main() {
       console.log(`[启动] 允许私聊: ${[...allowPrivateUsers].join(', ')}`)
     } else {
       console.log('[启动] 未配置私聊白名单，不处理私聊消息')
+    }
+
+    // 启动 QQ 群成员同步 + 每日播报
+    if (syncGroupId) {
+      startSyncLoop(client, syncGroupId)
+      startDailyReport(client, syncGroupId)
+    } else {
+      console.log('[启动] 未配置 QQ_GROUP_ID，跳过群成员同步和每日播报')
     }
 
     console.log()

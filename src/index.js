@@ -29,6 +29,7 @@ function parseNumberList(envValue) {
 const listenGroups = parseNumberList(process.env.LISTEN_GROUPS)
 const allowPrivateUsers = parseNumberList(process.env.ALLOW_PRIVATE_USERS)
 const syncGroupId = process.env.QQ_GROUP_ID ? parseInt(process.env.QQ_GROUP_ID) : null
+const reportGroupId = process.env.REPORT_GROUP_ID ? parseInt(process.env.REPORT_GROUP_ID) : syncGroupId
 
 console.log('========================================')
 console.log('  HORIZN 地平线 QQ 群机器人')
@@ -77,7 +78,7 @@ async function main() {
     // 启动 QQ 群成员同步 + 每日播报
     if (syncGroupId) {
       startSyncLoop(client, syncGroupId)
-      startDailyReport(client, syncGroupId)
+      startDailyReport(client, reportGroupId)
     } else {
       console.log('[启动] 未配置 QQ_GROUP_ID，跳过群成员同步和每日播报')
     }

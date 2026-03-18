@@ -23,7 +23,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 const DASHSCOPE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions'
 const MAX_USER_TURNS = 30
-const SESSION_TIMEOUT_MS = 30 * 60 * 1000
+const SESSION_IDLE_MS = 60 * 1000   // 1分钟无消息自动结束
 
 const SYSTEM_PROMPT = `你是艾米莉亚，HORIZN 地平线联队的AI管理助手，性格温和专业。
 职责：帮管理员查询成员档案、管理黑名单和舷号。
@@ -37,42 +37,50 @@ const SYSTEM_PROMPT = `你是艾米莉亚，HORIZN 地平线联队的AI管理助
 // ============================================================
 
 class Session {
-  constructor(userId, userName) {
+  constructor(userId, userName, groupId, client) {
     this.userId = userId
     this.userName = userName
+    this.groupId = groupId
+    this.client = client
     this.messages = []
     this.userTurnCount = 0
     this.lastActivity = Date.now()
-    this.pendingConfirm = null   // { toolCallId, toolName, args } — 等待用户回复
-    this.awaitingExecution = false  // 用户已回复，AI 决定是否执行
+    this.pendingConfirm = null
+    this.awaitingExecution = false
     this.id = `${Date.now()}_${userId}`
+    this.timer = null
   }
 
   push(msg) {
     this.messages.push(msg)
     this.lastActivity = Date.now()
   }
-
-  isExpired() {
-    return Date.now() - this.lastActivity > SESSION_TIMEOUT_MS
-  }
 }
 
 const sessions = new Map()
 
+function _resetIdleTimer(session) {
+  if (session.timer) clearTimeout(session.timer)
+  session.timer = setTimeout(async () => {
+    if (!sessions.has(session.userId)) return
+    try {
+      await session.client.sendGroupMessage(session.groupId, [
+        { type: 'at', data: { qq: String(session.userId) } },
+        { type: 'text', data: { text: '\n超过1分钟没有消息，本次对话已结束。如需继续请重新@我。' } }
+      ])
+    } catch {}
+    _endSession(session.userId, 'idle')
+  }, SESSION_IDLE_MS)
+}
+
 function getSession(userId) {
-  const s = sessions.get(userId)
-  if (!s) return null
-  if (s.isExpired()) {
-    _endSession(userId, 'timeout')
-    return null
-  }
-  return s
+  return sessions.get(userId) || null
 }
 
 function _endSession(userId, reason) {
   const s = sessions.get(userId)
   if (s) {
+    if (s.timer) clearTimeout(s.timer)
     _saveLog(s, reason)
     sessions.delete(userId)
   }
@@ -222,7 +230,7 @@ export async function processAmeliaMessage({
   // ── 创建或继续会话 ─────────────────────────────────────────────
   if (!session) {
     if (!isNewMention) return
-    session = new Session(userId, userName)
+    session = new Session(userId, userName, groupId, client)
     sessions.set(userId, session)
 
     const ctxPart = contextMsgs?.length
@@ -234,6 +242,7 @@ export async function processAmeliaMessage({
     session.push({ role: 'user', content: await buildUserContent(text, images) })
   }
 
+  _resetIdleTimer(session)
   session.userTurnCount++
 
   if (session.userTurnCount > MAX_USER_TURNS) {

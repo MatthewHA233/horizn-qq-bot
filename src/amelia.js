@@ -154,12 +154,13 @@ export function hasActiveSession(userId) {
  * @param {string} opts.userName     - 发送者昵称
  * @param {string} opts.text         - 消息文本（已去除 @艾米莉亚 前缀）
  * @param {Array}  opts.contextMsgs  - 前 5 条群聊消息 [{name, text}]（仅首次会话用）
+ * @param {string[]} opts.images     - 本条消息中的图片 URL 列表
  * @param {boolean} opts.isNewMention - 本条消息是否含 @bot
  * @param {number} opts.groupId
  * @param {object} opts.client       - NapCatClient
  */
 export async function processAmeliaMessage({
-  userId, userName, text, contextMsgs, isNewMention, groupId, client
+  userId, userName, text, images = [], contextMsgs, isNewMention, groupId, client
 }) {
   // 发送 @用户 的气泡
   const sendReply = async (content) => {
@@ -203,20 +204,33 @@ export async function processAmeliaMessage({
     return
   }
 
+  // ── 构建用户消息内容（支持多模态）─────────────────────────
+  function buildUserContent(msgText, msgImages = []) {
+    if (!msgImages.length) return msgText
+    // 有图片 → 多模态数组格式
+    const parts = []
+    if (msgText) parts.push({ type: 'text', text: msgText })
+    for (const url of msgImages) {
+      parts.push({ type: 'image_url', image_url: { url } })
+    }
+    return parts
+  }
+
   // ── 创建或继续会话 ─────────────────────────────────────────
   if (!session) {
     if (!isNewMention) return  // 只有 @提及 才能开启新会话
     session = new Session(userId, userName)
     sessions.set(userId, session)
 
-    // 首次消息带群聊背景
+    // 首次消息带群聊背景（背景只放文字，不嵌入图片）
     const ctxPart = contextMsgs?.length
       ? `[本次对话前的群聊背景：\n${contextMsgs.map(m => `${m.name}: ${m.text}`).join('\n')}\n]\n\n`
       : ''
-    session.push({ role: 'user', content: ctxPart + text })
+    const fullText = ctxPart + text
+    session.push({ role: 'user', content: buildUserContent(fullText, images) })
     console.log(`[Amelia] 新会话: ${userName}(${userId})`)
   } else {
-    session.push({ role: 'user', content: text })
+    session.push({ role: 'user', content: buildUserContent(text, images) })
   }
 
   session.userTurnCount++

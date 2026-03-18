@@ -67,6 +67,17 @@ export function extractTextFromMessage(message) {
 }
 
 /**
+ * 从 OneBot 消息段中提取图片 URL 列表
+ */
+function extractImagesFromMessage(message) {
+  if (!Array.isArray(message)) return []
+  return message
+    .filter(seg => seg.type === 'image')
+    .map(seg => seg.data?.url)
+    .filter(Boolean)
+}
+
+/**
  * 格式化日期为 YYYY.M.D
  */
 function fmtDate(d) {
@@ -208,15 +219,17 @@ async function handleGroupMessage(event, client, config) {
 
     if (isNewMention || userHasSession) {
       const cleanText = stripAtMention(text)
-      if (!cleanText && !userHasSession) return  // @了但没说话且无会话，忽略
+      const images = extractImagesFromMessage(event.message)
+      if (!cleanText && !images.length && !userHasSession) return  // @了但没说话且无会话，忽略
       const contextMsgs = isNewMention && !userHasSession
         ? getRecentGroupMessages(groupId, 5).slice(0, -1)  // 排除刚加入的本条
         : []
-      console.log(`[Amelia] ${senderName}(${senderId}): ${cleanText || text} ${isNewMention ? '[新@]' : '[续话]'}`)
+      console.log(`[Amelia] ${senderName}(${senderId}): ${cleanText || text} ${images.length ? `[图片x${images.length}]` : ''} ${isNewMention ? '[新@]' : '[续话]'}`)
       await processAmeliaMessage({
         userId: senderId,
         userName: senderName,
         text: cleanText || text,
+        images,
         contextMsgs,
         isNewMention,
         groupId,

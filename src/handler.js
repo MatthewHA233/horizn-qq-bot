@@ -71,10 +71,11 @@ export function extractTextFromMessage(message) {
  */
 function extractImagesFromMessage(message) {
   if (!Array.isArray(message)) return []
-  return message
-    .filter(seg => seg.type === 'image')
-    .map(seg => seg.data?.url)
-    .filter(Boolean)
+  const imageSegs = message.filter(seg => seg.type === 'image')
+  if (imageSegs.length > 0) {
+    console.log('[图片调试] image segments:', JSON.stringify(imageSegs, null, 2))
+  }
+  return imageSegs.map(seg => seg.data?.url).filter(Boolean)
 }
 
 /**

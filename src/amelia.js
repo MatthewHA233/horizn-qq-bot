@@ -191,6 +191,7 @@ export async function processAmeliaMessage({
   // ── 构建用户消息（支持多模态）─────────────────────────────────
   function buildUserContent(msgText, msgImages = []) {
     if (!msgImages.length) return msgText
+    console.log('[Amelia] 图片URLs:', msgImages)
     const parts = []
     if (msgText) parts.push({ type: 'text', text: msgText })
     for (const url of msgImages) {

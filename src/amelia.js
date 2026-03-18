@@ -298,6 +298,17 @@ export async function processAmeliaMessage({
         await sendReply(`🔧 正在${getToolLabel(toolName)}...`)
         try {
           const result = await executeAmeliaTool(toolName, args)
+          // 若工具返回图片文件，直接发图到群
+          if (result._imageFile) {
+            try {
+              await client.sendGroupMessage(groupId, [
+                { type: 'image', data: { file: `file://${result._imageFile}` } }
+              ])
+              console.log(`[Amelia] 座位图已发送: ${result._imageFile}`)
+            } catch (imgErr) {
+              console.error('[Amelia] 发送图片失败:', imgErr.message)
+            }
+          }
           const resultText = formatToolResult(toolName, result)
           session.push({ role: 'tool', tool_call_id: toolCall.id, name: toolName, content: resultText })
         } catch (err) {

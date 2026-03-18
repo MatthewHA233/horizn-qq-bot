@@ -3,6 +3,7 @@
  * 工具定义（function calling）+ 执行逻辑 + 格式化输出
  */
 import { getSupabaseClient } from './supabase.js'
+import { generateHullSeatmapImage } from './hullSeatmap.js'
 
 // ============================================================
 // 工具定义（OpenAI function calling 格式）
@@ -78,6 +79,22 @@ export const TOOL_DEFINITIONS = [
   {
     type: 'function',
     function: {
+      name: 'get_hull_stats',
+      description: '查询舷号统计：已分配数量、黑名单数量、空位区间分布。',
+      parameters: { type: 'object', properties: {} }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_hull_seatmap',
+      description: '生成舷号座位图图片并发送到群聊，直观展示所有已分配和空闲舷号。',
+      parameters: { type: 'object', properties: {} }
+    }
+  },
+  {
+    type: 'function',
+    function: {
       name: 'delete_external_blacklist',
       description: '从外部黑名单删除指定记录。此操作需要管理员确认。',
       parameters: {
@@ -132,6 +149,34 @@ export async function executeAmeliaTool(toolName, args) {
       return { success: true, player_id: args.player_id, hull_number: args.hull_number, hull_date: date }
     }
 
+    case 'get_hull_stats':
+      return await _getHullStats(sb)
+
+    case 'get_hull_seatmap': {
+      const stats = await _getHullStats(sb)
+      const { data: members } = await sb
+        .from('horizn_members')
+        .select('id, hull_number, player_id')
+        .not('hull_number', 'is', null)
+      // Fetch primary names
+      const ids = (members || []).map(m => m.id)
+      const nameMap = new Map()
+      if (ids.length) {
+        const { data: names } = await sb
+          .from('horizn_name_variants')
+          .select('member_id, name')
+          .in('member_id', ids)
+          .order('is_primary', { ascending: false })
+        ;(names || []).forEach(n => { if (!nameMap.has(n.member_id)) nameMap.set(n.member_id, n.name) })
+      }
+      const membersWithNames = (members || []).map(m => ({
+        ...m,
+        primary_name: nameMap.get(m.id) || null
+      }))
+      const imgPath = await generateHullSeatmapImage(membersWithNames, stats)
+      return { _imageFile: imgPath, totalAssigned: stats.totalAssigned }
+    }
+
     case 'add_external_blacklist': {
       const today = new Date().toISOString().slice(0, 10)
       const { error } = await sb
@@ -158,6 +203,41 @@ export async function executeAmeliaTool(toolName, args) {
 
     default:
       throw new Error(`未知工具: ${toolName}`)
+  }
+}
+
+async function _getHullStats(sb) {
+  const [hullRes, memberBlRes, extBlRes] = await Promise.all([
+    sb.from('horizn_members').select('hull_number').not('hull_number', 'is', null),
+    sb.from('horizn_members').select('id', { count: 'exact', head: true }).eq('is_blacklisted', true),
+    sb.from('horizn_blacklist_else').select('id', { count: 'exact', head: true })
+  ])
+
+  const nums = (hullRes.data || [])
+    .map(m => parseInt(m.hull_number)).filter(n => !isNaN(n)).sort((a, b) => a - b)
+  const occupied = new Set(nums)
+  const maxHull = nums.length ? Math.max(...nums) : 0
+
+  // Find gap clusters within [0, maxHull]
+  const gaps = []
+  for (let i = 0; i <= maxHull; i++) { if (!occupied.has(i)) gaps.push(i) }
+  const clusters = []
+  let cur = null
+  for (const g of gaps) {
+    if (!cur) { cur = { start: g, end: g }; continue }
+    if (g === cur.end + 1) cur.end = g
+    else { clusters.push(cur); cur = { start: g, end: g } }
+  }
+  if (cur) clusters.push(cur)
+
+  return {
+    totalAssigned: nums.length,
+    memberBlacklisted: memberBlRes.count || 0,
+    externalBlacklisted: extBlRes.count || 0,
+    blacklistTotal: (memberBlRes.count || 0) + (extBlRes.count || 0),
+    maxHull,
+    gapCount: gaps.length,
+    gapClusters: clusters
   }
 }
 
@@ -263,6 +343,28 @@ export function formatToolResult(toolName, result) {
       }
       return JSON.stringify(result)
     }
+    case 'get_hull_stats': {
+      const r = result
+      const lines = [
+        `舷号统计（最高 No.${r.maxHull}）：`,
+        `  已分配：${r.totalAssigned} 个`,
+        `  成员黑名单：${r.memberBlacklisted} 人，外部黑名单：${r.externalBlacklisted} 人`,
+        `  空位数：${r.gapCount} 个`,
+      ]
+      if (r.gapClusters.length) {
+        lines.push(`\n空位区间（共 ${r.gapClusters.length} 段）：`)
+        for (const c of r.gapClusters.slice(0, 12)) {
+          if (c.start === c.end) lines.push(`  No.${String(c.start).padStart(3,'0')}`)
+          else lines.push(`  No.${String(c.start).padStart(3,'0')}–${String(c.end).padStart(3,'0')}（${c.end - c.start + 1}个连续）`)
+        }
+        if (r.gapClusters.length > 12) lines.push(`  …共 ${r.gapClusters.length} 段空位`)
+      }
+      return lines.join('\n')
+    }
+
+    case 'get_hull_seatmap':
+      return `已生成舷号座位图（共 ${result.totalAssigned} 个已分配舷号），图片已发送到群聊。`
+
     case 'set_member_blacklist':
       return result.blacklisted
         ? `已将 ${result.player_id} 加入黑名单。`
@@ -284,7 +386,9 @@ export function getToolLabel(toolName) {
     set_member_blacklist: '黑名单操作',
     set_hull_number: '设置舷号',
     add_external_blacklist: '添加外部黑名单',
-    delete_external_blacklist: '删除外部黑名单记录'
+    delete_external_blacklist: '删除外部黑名单记录',
+    get_hull_stats: '查询舷号统计',
+    get_hull_seatmap: '生成舷号座位图'
   }[toolName] || toolName
 }
 

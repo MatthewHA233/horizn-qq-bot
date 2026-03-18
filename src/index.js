@@ -30,8 +30,10 @@ const listenGroups = parseNumberList(process.env.LISTEN_GROUPS)
 const allowPrivateUsers = parseNumberList(process.env.ALLOW_PRIVATE_USERS)
 const syncGroupId = process.env.QQ_GROUP_ID ? parseInt(process.env.QQ_GROUP_ID) : null
 const reportGroupId = process.env.REPORT_GROUP_ID ? parseInt(process.env.REPORT_GROUP_ID) : syncGroupId
-// 艾米莉亚 AI 聊天模式在管理群（与播报群相同）启用
-const ameliaGroupId = reportGroupId
+// 艾米莉亚 AI 聊天模式启用的管理群（支持多群）
+const ameliaGroups = process.env.AMELIA_GROUPS
+  ? parseNumberList(process.env.AMELIA_GROUPS)
+  : (reportGroupId ? new Set([reportGroupId]) : new Set())
 
 console.log('========================================')
 console.log('  HORIZN 地平线 QQ 群机器人')
@@ -52,7 +54,7 @@ async function main() {
   })
 
   // 3. 注册消息处理器（botQQId 登录后再填入）
-  const config = { listenGroups, allowPrivateUsers, syncGroupId, ameliaGroupId, botQQId: null }
+  const config = { listenGroups, allowPrivateUsers, syncGroupId, ameliaGroups, botQQId: null }
   const handler = createMessageHandler(client, config)
   client.onMessage(handler)
 

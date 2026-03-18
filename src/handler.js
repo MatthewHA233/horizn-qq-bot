@@ -198,7 +198,7 @@ async function queryAndBuildReply(playerIds) {
  * 处理群消息
  */
 async function handleGroupMessage(event, client, config) {
-  const { listenGroups, ameliaGroupId, botQQId } = config
+  const { listenGroups, ameliaGroups, botQQId } = config
   const groupId = event.group_id
   const messageId = event.message_id
   const senderId = event.sender?.user_id
@@ -213,7 +213,7 @@ async function handleGroupMessage(event, client, config) {
   cacheGroupMessage(groupId, senderId, senderName, text)
 
   // ── 艾米莉亚 AI 模式（仅管理群）────────────────────────────
-  if (ameliaGroupId && groupId === ameliaGroupId && botQQId) {
+  if (ameliaGroups?.has(groupId) && botQQId) {
     const isNewMention = hasAtMention(event.message, botQQId)
     const userHasSession = hasActiveSession(senderId)
 

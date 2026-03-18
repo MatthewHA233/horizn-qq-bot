@@ -24,6 +24,10 @@ const DASHSCOPE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/co
 const MAX_USER_TURNS = 30       // 最多 30 轮用户消息
 const SESSION_TIMEOUT_MS = 30 * 60 * 1000  // 30 分钟无活动自动结束
 
+function _isConfirmation(text) {
+  return /^(确认|是|yes|ok|好|执行|同意|确定)/i.test(text.trim())
+}
+
 const SYSTEM_PROMPT = `你是艾米莉亚，HORIZN 地平线联队的AI管理助手，性格温和专业。
 职责：帮管理员查询成员档案、管理黑名单和舷号。
 风格：简洁，使用中文，回答不超过200字。

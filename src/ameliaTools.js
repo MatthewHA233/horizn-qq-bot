@@ -154,26 +154,7 @@ export async function executeAmeliaTool(toolName, args) {
 
     case 'get_hull_seatmap': {
       const stats = await _getHullStats(sb)
-      const { data: members } = await sb
-        .from('horizn_members')
-        .select('id, hull_number, player_id')
-        .not('hull_number', 'is', null)
-      // Fetch primary names
-      const ids = (members || []).map(m => m.id)
-      const nameMap = new Map()
-      if (ids.length) {
-        const { data: names } = await sb
-          .from('horizn_name_variants')
-          .select('member_id, name')
-          .in('member_id', ids)
-          .order('is_primary', { ascending: false })
-        ;(names || []).forEach(n => { if (!nameMap.has(n.member_id)) nameMap.set(n.member_id, n.name) })
-      }
-      const membersWithNames = (members || []).map(m => ({
-        ...m,
-        primary_name: nameMap.get(m.id) || null
-      }))
-      const imgPath = await generateHullSeatmapImage(membersWithNames, stats)
+      const imgPath = await generateHullSeatmapImage()
       return { _imageFile: imgPath, totalAssigned: stats.totalAssigned }
     }
 

@@ -208,12 +208,8 @@ async function handleGroupMessage(event, client, config) {
   if (listenGroups.size === 0 || !listenGroups.has(groupId)) return
 
   const text = extractTextFromMessage(event.message)
-  if (!text) return
 
-  // ── 群消息缓存（供艾米莉亚上下文使用）─────────────────────
-  cacheGroupMessage(groupId, senderId, senderName, text)
-
-  // ── 艾米莉亚 AI 模式（仅管理群）────────────────────────────
+  // ── 艾米莉亚 AI 模式（仅管理群，图片消息也要处理）──────────
   if (ameliaGroups?.has(groupId) && botQQId) {
     const isNewMention = hasAtMention(event.message, botQQId)
     const userHasSession = hasActiveSession(senderId)
@@ -222,6 +218,9 @@ async function handleGroupMessage(event, client, config) {
       const cleanText = stripAtMention(text)
       const images = extractImagesFromMessage(event.message)
       if (!cleanText && !images.length && !userHasSession) return  // @了但没说话且无会话，忽略
+
+      // 仅在有文字时才缓存到群消息（图片消息不缓存）
+      if (cleanText || text) cacheGroupMessage(groupId, senderId, senderName, cleanText || text)
       const contextMsgs = isNewMention && !userHasSession
         ? getRecentGroupMessages(groupId, 5).slice(0, -1)  // 排除刚加入的本条
         : []
@@ -240,7 +239,10 @@ async function handleGroupMessage(event, client, config) {
     }
   }
 
-  // ── 普通 player_id 查询 ──────────────────────────────────
+  // ── 普通群：缓存 + player_id 查询 ───────────────────────
+  if (!text) return
+  cacheGroupMessage(groupId, senderId, senderName, text)
+
   const playerIds = extractPlayerIds(text)
   if (playerIds.length === 0) return
 

@@ -6,6 +6,32 @@
 import { getPlayerFullInfo } from './supabase.js'
 import { getPlayerActivity } from './duckdb.js'
 import { runReportForDate } from './reporter.js'
+import { processAmeliaMessage, hasActiveSession } from './amelia.js'
+
+// ── 群聊消息缓存（用于艾米莉亚上下文）─────────────────────────
+// groupId → [{userId, name, text}]  最多保留 20 条
+const groupMsgCache = new Map()
+
+function cacheGroupMessage(groupId, userId, name, text) {
+  if (!groupMsgCache.has(groupId)) groupMsgCache.set(groupId, [])
+  const cache = groupMsgCache.get(groupId)
+  cache.push({ userId, name, text })
+  if (cache.length > 20) cache.shift()
+}
+
+function getRecentGroupMessages(groupId, count = 5) {
+  return (groupMsgCache.get(groupId) || []).slice(-count)
+}
+
+function hasAtMention(message, botQQId) {
+  if (!Array.isArray(message)) return false
+  return message.some(seg => seg.type === 'at' && String(seg.data?.qq) === String(botQQId))
+}
+
+function stripAtMention(text) {
+  // 去掉文本中的 @xxx 前缀和多余空格
+  return text.replace(/^@\S+\s*/, '').trim()
+}
 
 /**
  * player_id 正则表达式
@@ -160,17 +186,47 @@ async function queryAndBuildReply(playerIds) {
 /**
  * 处理群消息
  */
-async function handleGroupMessage(event, client, listenGroups) {
+async function handleGroupMessage(event, client, config) {
+  const { listenGroups, ameliaGroupId, botQQId } = config
   const groupId = event.group_id
   const messageId = event.message_id
   const senderId = event.sender?.user_id
-  const senderName = event.sender?.nickname || event.sender?.card || '未知'
+  const senderName = event.sender?.card || event.sender?.nickname || '未知'
 
   if (listenGroups.size === 0 || !listenGroups.has(groupId)) return
 
   const text = extractTextFromMessage(event.message)
   if (!text) return
 
+  // ── 群消息缓存（供艾米莉亚上下文使用）─────────────────────
+  cacheGroupMessage(groupId, senderId, senderName, text)
+
+  // ── 艾米莉亚 AI 模式（仅管理群）────────────────────────────
+  if (ameliaGroupId && groupId === ameliaGroupId && botQQId) {
+    const isNewMention = hasAtMention(event.message, botQQId)
+    const userHasSession = hasActiveSession(senderId)
+
+    if (isNewMention || userHasSession) {
+      const cleanText = stripAtMention(text)
+      if (!cleanText && !userHasSession) return  // @了但没说话且无会话，忽略
+      const contextMsgs = isNewMention && !userHasSession
+        ? getRecentGroupMessages(groupId, 5).slice(0, -1)  // 排除刚加入的本条
+        : []
+      console.log(`[Amelia] ${senderName}(${senderId}): ${cleanText || text} ${isNewMention ? '[新@]' : '[续话]'}`)
+      await processAmeliaMessage({
+        userId: senderId,
+        userName: senderName,
+        text: cleanText || text,
+        contextMsgs,
+        isNewMention,
+        groupId,
+        client
+      })
+      return
+    }
+  }
+
+  // ── 普通 player_id 查询 ──────────────────────────────────
   const playerIds = extractPlayerIds(text)
   if (playerIds.length === 0) return
 
@@ -252,7 +308,7 @@ export async function handleMessage(event, client, config) {
   if (event.post_type !== 'message') return
 
   if (event.message_type === 'group') {
-    await handleGroupMessage(event, client, config.listenGroups)
+    await handleGroupMessage(event, client, config)
   } else if (event.message_type === 'private') {
     await handlePrivateMessage(event, client, config)
   }

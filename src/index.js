@@ -30,6 +30,8 @@ const listenGroups = parseNumberList(process.env.LISTEN_GROUPS)
 const allowPrivateUsers = parseNumberList(process.env.ALLOW_PRIVATE_USERS)
 const syncGroupId = process.env.QQ_GROUP_ID ? parseInt(process.env.QQ_GROUP_ID) : null
 const reportGroupId = process.env.REPORT_GROUP_ID ? parseInt(process.env.REPORT_GROUP_ID) : syncGroupId
+// 艾米莉亚 AI 聊天模式在管理群（与播报群相同）启用
+const ameliaGroupId = reportGroupId
 
 console.log('========================================')
 console.log('  HORIZN 地平线 QQ 群机器人')
@@ -49,8 +51,8 @@ async function main() {
     token: process.env.NAPCAT_TOKEN || ''
   })
 
-  // 3. 注册消息处理器
-  const config = { listenGroups, allowPrivateUsers, syncGroupId }
+  // 3. 注册消息处理器（botQQId 登录后再填入）
+  const config = { listenGroups, allowPrivateUsers, syncGroupId, ameliaGroupId, botQQId: null }
   const handler = createMessageHandler(client, config)
   client.onMessage(handler)
 
@@ -58,8 +60,9 @@ async function main() {
   try {
     await client.connect()
 
-    // 获取登录信息
+    // 获取登录信息，写入 botQQId 供 @检测使用
     const loginInfo = await client.getLoginInfo()
+    config.botQQId = loginInfo.user_id
     console.log(`[启动] 登录账号: ${loginInfo.nickname} (${loginInfo.user_id})`)
 
     // 显示监听配置

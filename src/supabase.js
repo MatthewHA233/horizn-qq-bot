@@ -14,6 +14,14 @@ export function initSupabase(url, serviceKey) {
 }
 
 /**
+ * 获取 Supabase 客户端实例（供内部模块使用）
+ */
+export function getSupabaseClient() {
+  if (!supabase) throw new Error('Supabase 未初始化')
+  return supabase
+}
+
+/**
  * 同步 QQ 群成员到数据库
  * @param {Array} members - NapCat 返回的成员列表
  * @returns {Promise<{success, inserted, updated, left, total}>}

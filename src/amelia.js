@@ -155,8 +155,7 @@ async function callAI(messages) {
 // ============================================================
 
 export function hasActiveSession(userId) {
-  const s = sessions.get(userId)
-  return !!s && !s.isExpired()
+  return sessions.has(userId)
 }
 
 /**

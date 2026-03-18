@@ -189,15 +189,34 @@ export async function processAmeliaMessage({
   }
 
   // ── 构建用户消息（支持多模态）─────────────────────────────────
-  function buildUserContent(msgText, msgImages = []) {
+  async function fetchImageAsBase64(url) {
+    try {
+      const resp = await fetch(url, { signal: AbortSignal.timeout(15000) })
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      const contentType = resp.headers.get('content-type') || 'image/jpeg'
+      const mimeType = contentType.split(';')[0].trim()
+      const buffer = await resp.arrayBuffer()
+      const base64 = Buffer.from(buffer).toString('base64')
+      console.log(`[Amelia] 图片转base64成功: ${url.slice(0, 60)}... mime=${mimeType} size=${buffer.byteLength}`)
+      return `data:${mimeType};base64,${base64}`
+    } catch (err) {
+      console.error(`[Amelia] 图片下载失败: ${url.slice(0, 60)}... ${err.message}`)
+      return null
+    }
+  }
+
+  async function buildUserContent(msgText, msgImages = []) {
     if (!msgImages.length) return msgText
-    console.log('[Amelia] 图片URLs:', msgImages)
+    console.log('[Amelia] 原始图片URLs:', msgImages)
     const parts = []
     if (msgText) parts.push({ type: 'text', text: msgText })
     for (const url of msgImages) {
-      parts.push({ type: 'image_url', image_url: { url } })
+      const dataUrl = await fetchImageAsBase64(url)
+      if (dataUrl) {
+        parts.push({ type: 'image_url', image_url: { url: dataUrl } })
+      }
     }
-    return parts
+    return parts.length > (msgText ? 1 : 0) ? parts : msgText
   }
 
   // ── 创建或继续会话 ─────────────────────────────────────────────
@@ -209,10 +228,10 @@ export async function processAmeliaMessage({
     const ctxPart = contextMsgs?.length
       ? `[本次对话前的群聊背景：\n${contextMsgs.map(m => `${m.name}: ${m.text}`).join('\n')}\n]\n\n`
       : ''
-    session.push({ role: 'user', content: buildUserContent(ctxPart + text, images) })
+    session.push({ role: 'user', content: await buildUserContent(ctxPart + text, images) })
     console.log(`[Amelia] 新会话: ${userName}(${userId})`)
   } else {
-    session.push({ role: 'user', content: buildUserContent(text, images) })
+    session.push({ role: 'user', content: await buildUserContent(text, images) })
   }
 
   session.userTurnCount++

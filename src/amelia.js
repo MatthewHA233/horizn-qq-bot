@@ -3,7 +3,8 @@
  * - 管理群 @艾米莉亚 触发，单用户持久会话，最多 30 轮
  * - 使用阿里云百炼 DashScope OpenAI 兼容接口
  * - 支持 function calling 工具（查询/黑名单/舷号管理）
- * - 需要确认的操作在执行前发气泡等用户回复
+ * - 需要确认的操作：AI 调用工具 → 向用户发确认气泡 → 用户自然语言回复
+ *   → AI 重新判断是否继续执行（无硬编码关键词）
  * - 会话结束后将对话记录保存到本地 logs/amelia/
  */
 import fs from 'fs'
@@ -21,17 +22,15 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 const DASHSCOPE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions'
-const MAX_USER_TURNS = 30       // 最多 30 轮用户消息
-const SESSION_TIMEOUT_MS = 30 * 60 * 1000  // 30 分钟无活动自动结束
-
-function _isConfirmation(text) {
-  return /^(确认|是|yes|ok|好|执行|同意|确定)/i.test(text.trim())
-}
+const MAX_USER_TURNS = 30
+const SESSION_TIMEOUT_MS = 30 * 60 * 1000
 
 const SYSTEM_PROMPT = `你是艾米莉亚，HORIZN 地平线联队的AI管理助手，性格温和专业。
 职责：帮管理员查询成员档案、管理黑名单和舷号。
 风格：简洁，使用中文，回答不超过200字。
-注意：涉及黑名单或删除操作，必须通过工具调用，系统会自动向管理员请求确认，你不用手动询问。`
+关于确认操作：当你调用需要确认的工具时，系统会自动暂停并询问用户。
+用户回复后你会重新收到对话，请根据用户的回复判断是否继续执行该工具。
+用户明确同意则再次调用工具；用户拒绝或犹豫则取消并说明。`
 
 // ============================================================
 // Session 数据结构
@@ -41,10 +40,11 @@ class Session {
   constructor(userId, userName) {
     this.userId = userId
     this.userName = userName
-    this.messages = []       // OpenAI message format，不含 system
-    this.userTurnCount = 0   // 用户发言轮次
+    this.messages = []
+    this.userTurnCount = 0
     this.lastActivity = Date.now()
-    this.pendingConfirm = null  // { toolCallId, toolName, args }
+    this.pendingConfirm = null   // { toolCallId, toolName, args } — 等待用户回复
+    this.awaitingExecution = false  // 用户已回复，AI 决定是否执行
     this.id = `${Date.now()}_${userId}`
   }
 
@@ -58,7 +58,6 @@ class Session {
   }
 }
 
-// userId → Session
 const sessions = new Map()
 
 function getSession(userId) {
@@ -93,9 +92,12 @@ function _saveLog(session, reason) {
       '─'.repeat(40)
     ]
     for (const m of session.messages) {
-      if (m.role === 'user') lines.push(`[用户] ${m.content}`)
-      else if (m.role === 'assistant' && m.content) lines.push(`[艾米莉亚] ${m.content}`)
-      else if (m.role === 'assistant' && m.tool_calls) {
+      if (m.role === 'user') {
+        const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
+        lines.push(`[用户] ${content}`)
+      } else if (m.role === 'assistant' && m.content) {
+        lines.push(`[艾米莉亚] ${m.content}`)
+      } else if (m.role === 'assistant' && m.tool_calls) {
         lines.push(`[工具调用] ${m.tool_calls.map(tc => tc.function.name).join(', ')}`)
       } else if (m.role === 'tool') {
         lines.push(`[工具结果(${m.name})] ${m.content}`)
@@ -151,22 +153,20 @@ export function hasActiveSession(userId) {
 
 /**
  * 处理一条艾米莉亚消息
- * 所有发送通过 sendReply / sendBubble 完成，无返回值
  *
  * @param {object} opts
- * @param {number} opts.userId       - 发送者 QQ
- * @param {string} opts.userName     - 发送者昵称
- * @param {string} opts.text         - 消息文本（已去除 @艾米莉亚 前缀）
- * @param {Array}  opts.contextMsgs  - 前 5 条群聊消息 [{name, text}]（仅首次会话用）
- * @param {string[]} opts.images     - 本条消息中的图片 URL 列表
- * @param {boolean} opts.isNewMention - 本条消息是否含 @bot
+ * @param {number} opts.userId
+ * @param {string} opts.userName
+ * @param {string} opts.text
+ * @param {string[]} opts.images      - 图片 URL 列表
+ * @param {Array}  opts.contextMsgs   - 前 5 条群聊消息（仅首次会话）
+ * @param {boolean} opts.isNewMention
  * @param {number} opts.groupId
- * @param {object} opts.client       - NapCatClient
+ * @param {object} opts.client
  */
 export async function processAmeliaMessage({
   userId, userName, text, images = [], contextMsgs, isNewMention, groupId, client
 }) {
-  // 发送 @用户 的气泡
   const sendReply = async (content) => {
     try {
       await client.sendGroupMessage(groupId, [
@@ -180,38 +180,17 @@ export async function processAmeliaMessage({
 
   let session = getSession(userId)
 
-  // ── 处理待确认操作 ──────────────────────────────────────────
+  // ── pendingConfirm：用户回复了确认/拒绝，设标记后继续走 AI loop ──
+  // 不做关键词判断，把用户的自然语言回复交给 AI 去理解
   if (session?.pendingConfirm) {
-    const { toolCallId, toolName, args } = session.pendingConfirm
     session.pendingConfirm = null
-
-    if (_isConfirmation(text)) {
-      await sendReply('正在执行...')
-      try {
-        const result = await executeAmeliaTool(toolName, args)
-        const resultText = formatToolResult(toolName, result)
-        session.push({ role: 'tool', tool_call_id: toolCallId, name: toolName, content: resultText })
-
-        const followUp = await callAI(session.messages)
-        const finalText = followUp.choices[0].message.content || '操作已完成。'
-        session.push({ role: 'assistant', content: finalText })
-        await sendReply(finalText)
-      } catch (err) {
-        console.error('[Amelia] 工具执行失败:', err.message)
-        session.push({ role: 'tool', tool_call_id: toolCallId, name: toolName, content: `失败: ${err.message}` })
-        await sendReply(`执行失败：${err.message}`)
-      }
-    } else {
-      session.push({ role: 'tool', tool_call_id: toolCallId, name: toolName, content: '用户取消了操作' })
-      await sendReply('操作已取消。')
-    }
-    return
+    session.awaitingExecution = true
+    // 继续向下，把用户消息加入历史，进入 AI loop
   }
 
-  // ── 构建用户消息内容（支持多模态）─────────────────────────
+  // ── 构建用户消息（支持多模态）─────────────────────────────────
   function buildUserContent(msgText, msgImages = []) {
     if (!msgImages.length) return msgText
-    // 有图片 → 多模态数组格式
     const parts = []
     if (msgText) parts.push({ type: 'text', text: msgText })
     for (const url of msgImages) {
@@ -220,18 +199,16 @@ export async function processAmeliaMessage({
     return parts
   }
 
-  // ── 创建或继续会话 ─────────────────────────────────────────
+  // ── 创建或继续会话 ─────────────────────────────────────────────
   if (!session) {
-    if (!isNewMention) return  // 只有 @提及 才能开启新会话
+    if (!isNewMention) return
     session = new Session(userId, userName)
     sessions.set(userId, session)
 
-    // 首次消息带群聊背景（背景只放文字，不嵌入图片）
     const ctxPart = contextMsgs?.length
       ? `[本次对话前的群聊背景：\n${contextMsgs.map(m => `${m.name}: ${m.text}`).join('\n')}\n]\n\n`
       : ''
-    const fullText = ctxPart + text
-    session.push({ role: 'user', content: buildUserContent(fullText, images) })
+    session.push({ role: 'user', content: buildUserContent(ctxPart + text, images) })
     console.log(`[Amelia] 新会话: ${userName}(${userId})`)
   } else {
     session.push({ role: 'user', content: buildUserContent(text, images) })
@@ -239,14 +216,13 @@ export async function processAmeliaMessage({
 
   session.userTurnCount++
 
-  // 达到上限
   if (session.userTurnCount > MAX_USER_TURNS) {
     await sendReply('会话已达30次上限，本次对话结束。如需继续请重新@我。')
     _endSession(userId, 'limit')
     return
   }
 
-  // ── 主 AI 循环（工具调用可能多轮）───────────────────────────
+  // ── 主 AI 循环 ──────────────────────────────────────────────────
   for (let round = 0; round < 5; round++) {
     let aiResp
     try {
@@ -262,6 +238,7 @@ export async function processAmeliaMessage({
 
     // 纯文本回复
     if (!assistantMsg.tool_calls?.length) {
+      session.awaitingExecution = false
       await sendReply(assistantMsg.content || '（无回复）')
       return
     }
@@ -273,26 +250,35 @@ export async function processAmeliaMessage({
       let args
       try { args = JSON.parse(toolCall.function.arguments) } catch { args = {} }
 
-      if (CONFIRM_REQUIRED_TOOLS.has(toolName)) {
-        // 需要确认：发气泡后暂停
+      if (CONFIRM_REQUIRED_TOOLS.has(toolName) && !session.awaitingExecution) {
+        // 需要确认：先插一条占位 tool result（保持消息格式合法），再发确认气泡
+        const confirmMsg = buildConfirmMessage(toolName, args)
+        session.push({
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          name: toolName,
+          content: `[等待管理员确认] 已发送确认请求：「${confirmMsg}」`
+        })
         session.pendingConfirm = { toolCallId: toolCall.id, toolName, args }
-        await sendReply(buildConfirmMessage(toolName, args))
+        await sendReply(confirmMsg)
         waitForConfirm = true
         break
       } else {
-        // 立即执行：先发"正在..."气泡
+        // 直接执行（普通工具 或 awaitingExecution=true 已确认）
+        session.awaitingExecution = false
         await sendReply(`🔧 正在${getToolLabel(toolName)}...`)
         try {
           const result = await executeAmeliaTool(toolName, args)
           const resultText = formatToolResult(toolName, result)
           session.push({ role: 'tool', tool_call_id: toolCall.id, name: toolName, content: resultText })
         } catch (err) {
+          console.error(`[Amelia] 工具 ${toolName} 失败:`, err.message)
           session.push({ role: 'tool', tool_call_id: toolCall.id, name: toolName, content: `失败: ${err.message}` })
         }
       }
     }
 
     if (waitForConfirm) return
-    // 有工具结果 → 继续循环让 AI 生成最终回复
+    // 有工具结果 → 继续循环让 AI 生成最终文字回复
   }
 }

@@ -111,6 +111,34 @@ export const TOOL_DEFINITIONS = [
   {
     type: 'function',
     function: {
+      name: 'query_hull_owner',
+      description: '查询指定舷号的主人是谁',
+      parameters: {
+        type: 'object',
+        properties: {
+          hull_number: { type: 'string', description: '舷号，如 "42"' }
+        },
+        required: ['hull_number']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'query_hull_assignments',
+      description: '查询指定时间范围内被授予舷号的成员列表。可按月份查询或查最近N天。',
+      parameters: {
+        type: 'object',
+        properties: {
+          month: { type: 'string', description: '月份，格式 YYYY-MM，如 "2026-03"。与 recent_days 二选一' },
+          recent_days: { type: 'integer', description: '最近N天，默认30。与 month 二选一' }
+        }
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
       name: 'delete_external_blacklist',
       description: '从外部黑名单删除指定记录。此操作需要管理员确认。',
       parameters: {
@@ -183,6 +211,12 @@ export async function executeAmeliaTool(toolName, args) {
       return { _imageFile: imgPath, view: 'blacklist' }
     }
 
+    case 'query_hull_owner':
+      return await _queryHullOwner(sb, args.hull_number)
+
+    case 'query_hull_assignments':
+      return await _queryHullAssignments(sb, args.month, args.recent_days)
+
     case 'add_external_blacklist': {
       const today = new Date().toISOString().slice(0, 10)
       const { error } = await sb
@@ -209,6 +243,118 @@ export async function executeAmeliaTool(toolName, args) {
 
     default:
       throw new Error(`未知工具: ${toolName}`)
+  }
+}
+
+async function _queryHullOwner(sb, hullNumber) {
+  const { data, error } = await sb
+    .from('horizn_members')
+    .select('id, player_id, hull_number, hull_date, active, is_blacklisted')
+    .eq('hull_number', hullNumber)
+    .limit(1)
+  if (error) throw new Error(error.message)
+  if (!data?.length) return { found: false, hull_number: hullNumber }
+
+  const member = data[0]
+  const [nameRes, qqRes] = await Promise.all([
+    sb.from('horizn_name_variants')
+      .select('name')
+      .eq('member_id', member.id)
+      .order('is_primary', { ascending: false })
+      .limit(1),
+    sb.from('horizn_qq_accounts')
+      .select('qq_id, nickname, join_time')
+      .eq('member_id', member.id)
+      .eq('is_ignored', false)
+      .order('join_time', { ascending: true })
+      .limit(1)
+  ])
+
+  const qq = qqRes.data?.[0]
+  return {
+    found: true,
+    hull_number: hullNumber,
+    player_id: member.player_id,
+    primary_name: nameRes.data?.[0]?.name || null,
+    hull_date: member.hull_date,
+    active: member.active,
+    is_blacklisted: member.is_blacklisted,
+    qq_id: qq?.qq_id || null,
+    qq_join_time: qq?.join_time ? new Date(qq.join_time * 1000).toISOString().slice(0, 10) : null
+  }
+}
+
+async function _queryHullAssignments(sb, month, recentDays) {
+  let dateFrom, dateTo, label
+
+  if (month) {
+    // YYYY-MM format
+    const [y, m] = month.split('-').map(Number)
+    dateFrom = `${y}-${String(m).padStart(2, '0')}-01`
+    // last day of month
+    const lastDay = new Date(y, m, 0).getDate()
+    dateTo = `${y}-${String(m).padStart(2, '0')}-${lastDay}`
+    label = `${y}年${m}月`
+  } else {
+    const days = recentDays || 30
+    const now = new Date()
+    dateTo = now.toISOString().slice(0, 10)
+    const from = new Date(now.getTime() - days * 86400000)
+    dateFrom = from.toISOString().slice(0, 10)
+    label = `最近${days}天`
+  }
+
+  const { data, error } = await sb
+    .from('horizn_members')
+    .select('id, player_id, hull_number, hull_date, active')
+    .not('hull_number', 'is', null)
+    .gte('hull_date', dateFrom)
+    .lte('hull_date', dateTo)
+    .order('hull_date', { ascending: true })
+
+  if (error) throw new Error(error.message)
+
+  // batch fetch names + QQ accounts
+  const memberIds = (data || []).map(m => m.id)
+  let nameMap = {}
+  let qqMap = {}
+  if (memberIds.length) {
+    const [namesRes, qqRes] = await Promise.all([
+      sb.from('horizn_name_variants')
+        .select('member_id, name, is_primary')
+        .in('member_id', memberIds)
+        .order('is_primary', { ascending: false }),
+      sb.from('horizn_qq_accounts')
+        .select('member_id, qq_id, join_time')
+        .in('member_id', memberIds)
+        .eq('is_ignored', false)
+        .order('join_time', { ascending: true })
+    ])
+    for (const n of (namesRes.data || [])) {
+      if (!nameMap[n.member_id]) nameMap[n.member_id] = n.name
+    }
+    for (const q of (qqRes.data || [])) {
+      if (!qqMap[q.member_id]) qqMap[q.member_id] = q
+    }
+  }
+
+  return {
+    label,
+    dateFrom,
+    dateTo,
+    count: (data || []).length,
+    members: (data || []).map(m => {
+      const qq = qqMap[m.id]
+      return {
+        player_id: m.player_id,
+        primary_name: nameMap[m.id] || null,
+        hull_number: m.hull_number,
+        hull_date: m.hull_date,
+        active: m.active,
+        qq_id: qq?.qq_id || null,
+        qq_join_time: qq?.join_time ? new Date(qq.join_time * 1000).toISOString().slice(0, 10) : null
+      }
+    })
   }
 }
 
@@ -375,6 +521,30 @@ export function formatToolResult(toolName, result) {
     case 'get_blacklist_image':
       return '已生成黑名单图片（含成员黑名单 + 外部黑名单），已发送到群聊。'
 
+    case 'query_hull_owner': {
+      if (!result.found) return `舷号 No.${result.hull_number} 目前无人使用。`
+      const lines = [
+        `舷号 No.${result.hull_number} 的主人：`,
+        `  ${result.primary_name || result.player_id}（${result.player_id}）`,
+        `  授予日期：${result.hull_date || '未知'}`,
+        `  状态：${result.active ? '现役' : '已离队'}${result.is_blacklisted ? ' ⚠️黑名单' : ''}`
+      ]
+      if (result.qq_id) lines.push(`  QQ：${result.qq_id}，入群：${result.qq_join_time || '未知'}`)
+      return lines.join('\n')
+    }
+    case 'query_hull_assignments': {
+      if (!result.count) return `${result.label}（${result.dateFrom} ~ ${result.dateTo}）没有新授予舷号的记录。`
+      const lines = [`${result.label} 共授予 ${result.count} 个舷号：`]
+      for (const m of result.members) {
+        let line = `  No.${m.hull_number} → ${m.primary_name || m.player_id}（${m.hull_date}）`
+        if (m.qq_id) line += ` QQ:${m.qq_id}`
+        if (m.qq_join_time) line += ` 入群:${m.qq_join_time}`
+        if (!m.active) line += ' [离队]'
+        lines.push(line)
+      }
+      return lines.join('\n')
+    }
+
     case 'set_member_blacklist':
       return result.blacklisted
         ? `已将 ${result.player_id} 加入黑名单。`
@@ -397,6 +567,8 @@ export function getToolLabel(toolName) {
     set_hull_number: '设置舷号',
     add_external_blacklist: '添加外部黑名单',
     delete_external_blacklist: '删除外部黑名单记录',
+    query_hull_owner: '查询舷号归属',
+    query_hull_assignments: '查询舷号授予记录',
     get_hull_stats: '查询舷号 & 黑名单统计数据',
     get_hull_seatmap: '生成舷号座位图（截图，约需10秒）',
     get_hull_list: '生成舷号列表图（截图，约需10秒）',

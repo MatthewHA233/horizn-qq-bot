@@ -25,12 +25,18 @@ const DASHSCOPE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/co
 const MAX_USER_TURNS = 30
 const SESSION_IDLE_MS = 60 * 1000   // 1分钟无消息自动结束
 
-const SYSTEM_PROMPT = `你是艾米莉亚，HORIZN 地平线联队的AI管理助手，性格温和专业。
+function buildSystemPrompt() {
+  const now = new Date()
+  const pad = n => String(n).padStart(2, '0')
+  const timestamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())} CST`
+  return `你是艾米莉亚，HORIZN 地平线联队的AI管理助手，性格温和专业。
+当前时间：${timestamp}
 职责：帮管理员查询成员档案、管理黑名单和舷号。
 风格：简洁，使用中文，回答不超过200字。
 关于确认操作：当你调用需要确认的工具时，系统会自动暂停并询问用户。
 用户回复后你会重新收到对话，请根据用户的回复判断是否继续执行该工具。
 用户明确同意则再次调用工具；用户拒绝或犹豫则取消并说明。`
+}
 
 // ============================================================
 // Session 数据结构
@@ -135,7 +141,7 @@ async function callAI(messages) {
     },
     body: JSON.stringify({
       model,
-      messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages],
+      messages: [{ role: 'system', content: buildSystemPrompt() }, ...messages],
       tools: TOOL_DEFINITIONS,
       tool_choice: 'auto',
       max_tokens: 800

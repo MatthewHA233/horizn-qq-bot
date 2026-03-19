@@ -139,6 +139,20 @@ export const TOOL_DEFINITIONS = [
   {
     type: 'function',
     function: {
+      name: 'query_qq_joins',
+      description: '查询指定时间范围内入群（QQ群）的成员列表，包含QQ号、入群时间、关联的游戏名和舷号。',
+      parameters: {
+        type: 'object',
+        properties: {
+          month: { type: 'string', description: '月份，格式 YYYY-MM。与 recent_days 二选一' },
+          recent_days: { type: 'integer', description: '最近N天，默认30。与 month 二选一' }
+        }
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
       name: 'delete_external_blacklist',
       description: '从外部黑名单删除指定记录。此操作需要管理员确认。',
       parameters: {
@@ -216,6 +230,9 @@ export async function executeAmeliaTool(toolName, args) {
 
     case 'query_hull_assignments':
       return await _queryHullAssignments(sb, args.month, args.recent_days)
+
+    case 'query_qq_joins':
+      return await _queryQQJoins(sb, args.month, args.recent_days)
 
     case 'add_external_blacklist': {
       const today = new Date().toISOString().slice(0, 10)
@@ -353,6 +370,74 @@ async function _queryHullAssignments(sb, month, recentDays) {
         active: m.active,
         qq_id: qq?.qq_id || null,
         qq_join_time: qq?.join_time ? new Date(qq.join_time * 1000).toISOString().slice(0, 10) : null
+      }
+    })
+  }
+}
+
+async function _queryQQJoins(sb, month, recentDays) {
+  let tsFrom, tsTo, label
+
+  if (month) {
+    const [y, m] = month.split('-').map(Number)
+    tsFrom = Math.floor(new Date(y, m - 1, 1).getTime() / 1000)
+    tsTo = Math.floor(new Date(y, m, 0, 23, 59, 59).getTime() / 1000)
+    label = `${y}年${m}月`
+  } else {
+    const days = recentDays || 30
+    const now = Math.floor(Date.now() / 1000)
+    tsFrom = now - days * 86400
+    tsTo = now
+    label = `最近${days}天`
+  }
+
+  const { data, error } = await sb
+    .from('horizn_qq_accounts')
+    .select('qq_id, nickname, card, join_time, member_id')
+    .eq('is_ignored', false)
+    .gte('join_time', tsFrom)
+    .lte('join_time', tsTo)
+    .order('join_time', { ascending: true })
+
+  if (error) throw new Error(error.message)
+
+  // batch fetch member info (name, hull, active)
+  const memberIds = [...new Set((data || []).filter(q => q.member_id).map(q => q.member_id))]
+  let memberMap = {}
+  if (memberIds.length) {
+    const [membersRes, namesRes] = await Promise.all([
+      sb.from('horizn_members')
+        .select('id, player_id, hull_number, active')
+        .in('id', memberIds),
+      sb.from('horizn_name_variants')
+        .select('member_id, name, is_primary')
+        .in('member_id', memberIds)
+        .order('is_primary', { ascending: false })
+    ])
+    const nameMap = {}
+    for (const n of (namesRes.data || [])) {
+      if (!nameMap[n.member_id]) nameMap[n.member_id] = n.name
+    }
+    for (const m of (membersRes.data || [])) {
+      memberMap[m.id] = { ...m, primary_name: nameMap[m.id] || null }
+    }
+  }
+
+  return {
+    label,
+    dateFrom: new Date(tsFrom * 1000).toISOString().slice(0, 10),
+    dateTo: new Date(tsTo * 1000).toISOString().slice(0, 10),
+    count: (data || []).length,
+    members: (data || []).map(q => {
+      const m = memberMap[q.member_id]
+      return {
+        qq_id: q.qq_id,
+        qq_nickname: q.card || q.nickname || null,
+        qq_join_time: q.join_time ? new Date(q.join_time * 1000).toISOString().slice(0, 10) : null,
+        player_id: m?.player_id || null,
+        primary_name: m?.primary_name || null,
+        hull_number: m?.hull_number || null,
+        active: m?.active ?? null
       }
     })
   }
@@ -544,6 +629,19 @@ export function formatToolResult(toolName, result) {
       }
       return lines.join('\n')
     }
+    case 'query_qq_joins': {
+      if (!result.count) return `${result.label}（${result.dateFrom} ~ ${result.dateTo}）没有新入群记录。`
+      const lines = [`${result.label} 共 ${result.count} 人入群：`]
+      for (const m of result.members) {
+        let line = `  ${m.qq_join_time} ${m.qq_nickname || 'QQ:' + m.qq_id}`
+        if (m.primary_name) line += `（游戏名: ${m.primary_name}）`
+        if (m.hull_number) line += ` 舷号No.${m.hull_number}`
+        if (m.active === false) line += ' [离队]'
+        if (!m.player_id) line += ' [未关联成员]'
+        lines.push(line)
+      }
+      return lines.join('\n')
+    }
 
     case 'set_member_blacklist':
       return result.blacklisted
@@ -569,6 +667,7 @@ export function getToolLabel(toolName) {
     delete_external_blacklist: '删除外部黑名单记录',
     query_hull_owner: '查询舷号归属',
     query_hull_assignments: '查询舷号授予记录',
+    query_qq_joins: '查询QQ入群记录',
     get_hull_stats: '查询舷号 & 黑名单统计数据',
     get_hull_seatmap: '生成舷号座位图（截图，约需10秒）',
     get_hull_list: '生成舷号列表图（截图，约需10秒）',

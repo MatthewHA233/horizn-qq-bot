@@ -156,10 +156,7 @@ async function runBotDetectionReport(sendFn, dateLabel, dateStr) {
 async function runUnlinkedReport(sendFn) {
   const unlinked = await getUnlinkedQQMembers()
 
-  if (unlinked.length === 0) {
-    console.log('[播报] 所有在群成员均已绑定游戏号')
-    return
-  }
+  if (unlinked.length === 0) return
 
   const lines = [`⚠️ 未绑定游戏号的群成员（${unlinked.length} 人）：`]
   for (const m of unlinked) {

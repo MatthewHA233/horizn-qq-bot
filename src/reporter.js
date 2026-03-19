@@ -4,7 +4,7 @@
  *   1. 播报前一天的入离队情况
  *   2. 对前一天的活跃度数据运行脚本号检测，若有可疑成员则发送预警
  */
-import { getDailyEvents, getActiveMembersMap } from './supabase.js'
+import { getDailyEvents, getActiveMembersMap, getUnlinkedQQMembers } from './supabase.js'
 import { getFullDayActivity } from './duckdb.js'
 import { analyzeBotDetection, filterSuspiciousMembers, formatDuration } from './botDetection.js'
 
@@ -151,6 +151,28 @@ async function runBotDetectionReport(sendFn, dateLabel, dateStr) {
 }
 
 /**
+ * 播报未绑定游戏号的QQ群成员
+ */
+async function runUnlinkedReport(sendFn) {
+  const unlinked = await getUnlinkedQQMembers()
+
+  if (unlinked.length === 0) {
+    console.log('[播报] 所有在群成员均已绑定游戏号')
+    return
+  }
+
+  const lines = [`⚠️ 未绑定游戏号的群成员（${unlinked.length} 人）：`]
+  for (const m of unlinked) {
+    const name = m.card || m.nickname || String(m.qq_id)
+    const joinDate = m.join_time ? String(m.join_time).slice(0, 10) : '未知'
+    lines.push(`  ${name}（QQ:${m.qq_id}）入群:${joinDate}`)
+  }
+
+  await sendFn(lines.join('\n'))
+  console.log(`[播报] 未绑定成员播报已发送（${unlinked.length} 人）`)
+}
+
+/**
  * 从 YYYY-MM-DD 字符串计算播报所需的时间范围和标签
  */
 function buildDateRange(dateStr) {
@@ -184,6 +206,10 @@ export async function runReportForDate(client, groupId, dateStr, debugUserId = n
 
   await runBotDetectionReport(sendFn, dateLabel, dateStr).catch(err =>
     console.error('[播报] 脚本号检测失败:', err.message)
+  )
+
+  await runUnlinkedReport(sendFn).catch(err =>
+    console.error('[播报] 未绑定成员播报失败:', err.message)
   )
 }
 

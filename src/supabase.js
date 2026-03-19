@@ -111,6 +111,24 @@ export async function getDailyEvents(startUTC, endUTC) {
 }
 
 /**
+ * 查询在群但未绑定游戏号的QQ成员
+ */
+export async function getUnlinkedQQMembers() {
+  if (!supabase) throw new Error('数据库未初始化')
+
+  const { data, error } = await supabase
+    .from('horizn_qq_accounts')
+    .select('qq_id, nickname, card, join_time')
+    .is('member_id', null)
+    .is('left_at', null)
+    .eq('is_ignored', false)
+    .order('join_time', { ascending: true })
+
+  if (error) throw new Error(`未绑定成员查询失败: ${error.message}`)
+  return data || []
+}
+
+/**
  * 查询玩家完整档案
  * @param {string} playerId
  * @returns {Promise<{

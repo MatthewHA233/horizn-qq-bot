@@ -182,13 +182,20 @@ export async function processAmeliaMessage({
 }) {
   const sendReply = async (content) => {
     try {
-      await client.sendGroupMessage(groupId, [
+      const res = await client.sendGroupMessage(groupId, [
         { type: 'at', data: { qq: String(userId) } },
         { type: 'text', data: { text: '\n' + content } }
       ])
+      return res?.message_id || null
     } catch (e) {
       console.error('[Amelia] 发送失败:', e.message)
+      return null
     }
+  }
+
+  const recallMessage = async (msgId) => {
+    if (!msgId) return
+    try { await client.deleteMessage(msgId) } catch {}
   }
 
   let session = getSession(userId)
@@ -300,7 +307,7 @@ export async function processAmeliaMessage({
       } else {
         // 直接执行（普通工具 或 awaitingExecution=true 已确认）
         session.awaitingExecution = false
-        await sendReply(`🔧 正在${getToolLabel(toolName)}...`)
+        const statusMsgId = await sendReply(`🔧 正在${getToolLabel(toolName)}...`)
         try {
           const result = await executeAmeliaTool(toolName, args)
           // 若工具返回图片文件，直接发图到群
@@ -320,6 +327,7 @@ export async function processAmeliaMessage({
           console.error(`[Amelia] 工具 ${toolName} 失败:`, err.message)
           session.push({ role: 'tool', tool_call_id: toolCall.id, name: toolName, content: `失败: ${err.message}` })
         }
+        await recallMessage(statusMsgId)
       }
     }
 

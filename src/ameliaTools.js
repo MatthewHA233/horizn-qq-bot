@@ -297,7 +297,7 @@ async function _queryHullOwner(sb, hullNumber) {
     active: member.active,
     is_blacklisted: member.is_blacklisted,
     qq_id: qq?.qq_id || null,
-    qq_join_time: qq?.join_time ? new Date(qq.join_time * 1000).toISOString().slice(0, 10) : null
+    qq_join_time: qq?.join_time ? String(qq.join_time).slice(0, 10) : null
   }
 }
 
@@ -369,25 +369,27 @@ async function _queryHullAssignments(sb, month, recentDays) {
         hull_date: m.hull_date,
         active: m.active,
         qq_id: qq?.qq_id || null,
-        qq_join_time: qq?.join_time ? new Date(qq.join_time * 1000).toISOString().slice(0, 10) : null
+        qq_join_time: qq?.join_time ? String(qq.join_time).slice(0, 10) : null
       }
     })
   }
 }
 
 async function _queryQQJoins(sb, month, recentDays) {
-  let tsFrom, tsTo, label
+  let dateFrom, dateTo, label
 
   if (month) {
     const [y, m] = month.split('-').map(Number)
-    tsFrom = Math.floor(new Date(y, m - 1, 1).getTime() / 1000)
-    tsTo = Math.floor(new Date(y, m, 0, 23, 59, 59).getTime() / 1000)
+    dateFrom = `${y}-${String(m).padStart(2, '0')}-01T00:00:00Z`
+    const lastDay = new Date(y, m, 0).getDate()
+    dateTo = `${y}-${String(m).padStart(2, '0')}-${lastDay}T23:59:59Z`
     label = `${y}年${m}月`
   } else {
     const days = recentDays || 30
-    const now = Math.floor(Date.now() / 1000)
-    tsFrom = now - days * 86400
-    tsTo = now
+    const now = new Date()
+    dateTo = now.toISOString()
+    const from = new Date(now.getTime() - days * 86400000)
+    dateFrom = from.toISOString()
     label = `最近${days}天`
   }
 
@@ -395,8 +397,8 @@ async function _queryQQJoins(sb, month, recentDays) {
     .from('horizn_qq_accounts')
     .select('qq_id, nickname, card, join_time, member_id')
     .eq('is_ignored', false)
-    .gte('join_time', tsFrom)
-    .lte('join_time', tsTo)
+    .gte('join_time', dateFrom)
+    .lte('join_time', dateTo)
     .order('join_time', { ascending: true })
 
   if (error) throw new Error(error.message)
@@ -425,15 +427,15 @@ async function _queryQQJoins(sb, month, recentDays) {
 
   return {
     label,
-    dateFrom: new Date(tsFrom * 1000).toISOString().slice(0, 10),
-    dateTo: new Date(tsTo * 1000).toISOString().slice(0, 10),
+    dateFrom: dateFrom.slice(0, 10),
+    dateTo: dateTo.slice(0, 10),
     count: (data || []).length,
     members: (data || []).map(q => {
       const m = memberMap[q.member_id]
       return {
         qq_id: q.qq_id,
         qq_nickname: q.card || q.nickname || null,
-        qq_join_time: q.join_time ? new Date(q.join_time * 1000).toISOString().slice(0, 10) : null,
+        qq_join_time: q.join_time ? String(q.join_time).slice(0, 10) : null,
         player_id: m?.player_id || null,
         primary_name: m?.primary_name || null,
         hull_number: m?.hull_number || null,

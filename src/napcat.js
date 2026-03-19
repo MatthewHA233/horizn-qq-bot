@@ -194,6 +194,13 @@ export class NapCatClient {
   }
 
   /**
+   * 撤回消息
+   */
+  async deleteMessage(messageId) {
+    return this.callApi('delete_msg', { message_id: messageId })
+  }
+
+  /**
    * 获取 QQ 群成员列表
    */
   async getGroupMemberList(groupId) {

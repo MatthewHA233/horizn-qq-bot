@@ -88,7 +88,23 @@ export const TOOL_DEFINITIONS = [
     type: 'function',
     function: {
       name: 'get_hull_seatmap',
-      description: '生成舷号座位图图片并发送到群聊，直观展示所有已分配和空闲舷号。',
+      description: '生成舷号座位图（网格视图）图片发送到群聊，按 COMMAND/ELITE/HONOR 分区展示占位状态。',
+      parameters: { type: 'object', properties: {} }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_hull_list',
+      description: '生成舷号列表图片发送到群聊，按舷号排序展示所有成员的舷号、授予日期和状态。',
+      parameters: { type: 'object', properties: {} }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_blacklist_image',
+      description: '生成黑名单图片发送到群聊，包括成员黑名单和外部黑名单，显示拉黑日期和原因。',
       parameters: { type: 'object', properties: {} }
     }
   },
@@ -153,9 +169,18 @@ export async function executeAmeliaTool(toolName, args) {
       return await _getHullStats(sb)
 
     case 'get_hull_seatmap': {
-      const stats = await _getHullStats(sb)
-      const imgPath = await generateHullSeatmapImage()
-      return { _imageFile: imgPath, totalAssigned: stats.totalAssigned }
+      const imgPath = await generateHullSeatmapImage('grid')
+      return { _imageFile: imgPath, view: 'grid' }
+    }
+
+    case 'get_hull_list': {
+      const imgPath = await generateHullSeatmapImage('list')
+      return { _imageFile: imgPath, view: 'list' }
+    }
+
+    case 'get_blacklist_image': {
+      const imgPath = await generateHullSeatmapImage('blacklist')
+      return { _imageFile: imgPath, view: 'blacklist' }
     }
 
     case 'add_external_blacklist': {
@@ -344,7 +369,11 @@ export function formatToolResult(toolName, result) {
     }
 
     case 'get_hull_seatmap':
-      return `已生成舷号座位图（共 ${result.totalAssigned} 个已分配舷号），图片已发送到群聊。`
+      return '已生成舷号座位图（网格视图），图片已发送到群聊。'
+    case 'get_hull_list':
+      return '已生成舷号列表图片，已发送到群聊。'
+    case 'get_blacklist_image':
+      return '已生成黑名单图片（含成员黑名单 + 外部黑名单），已发送到群聊。'
 
     case 'set_member_blacklist':
       return result.blacklisted
@@ -363,13 +392,15 @@ export function formatToolResult(toolName, result) {
 
 export function getToolLabel(toolName) {
   return {
-    search_member: '查询成员',
-    set_member_blacklist: '黑名单操作',
+    search_member: '查询成员档案',
+    set_member_blacklist: '操作成员黑名单',
     set_hull_number: '设置舷号',
     add_external_blacklist: '添加外部黑名单',
     delete_external_blacklist: '删除外部黑名单记录',
-    get_hull_stats: '查询舷号统计',
-    get_hull_seatmap: '生成舷号座位图'
+    get_hull_stats: '查询舷号 & 黑名单统计数据',
+    get_hull_seatmap: '生成舷号座位图（截图，约需10秒）',
+    get_hull_list: '生成舷号列表图（截图，约需10秒）',
+    get_blacklist_image: '生成黑名单图片（截图，约需10秒）'
   }[toolName] || toolName
 }
 

@@ -9,12 +9,14 @@ import { fileURLToPath } from 'url'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const TMP_DIR = path.join(__dirname, '..', 'tmp')
 
-export async function generateHullSeatmapImage() {
+/** @param {'grid'|'list'|'blacklist'} view */
+export async function generateHullSeatmapImage(view = 'grid') {
   const apiUrl = process.env.SEATMAP_API_URL
   if (!apiUrl) throw new Error('未配置 SEATMAP_API_URL')
 
   const token = process.env.HORIZN_BOT_TOKEN
-  const url = token ? `${apiUrl}?token=${encodeURIComponent(token)}` : apiUrl
+  let url = token ? `${apiUrl}?token=${encodeURIComponent(token)}` : apiUrl
+  if (view !== 'grid') url += `&view=${view}`
 
   const resp = await fetch(url, { signal: AbortSignal.timeout(30000) })
   if (!resp.ok) {

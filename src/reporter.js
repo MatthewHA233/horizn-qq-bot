@@ -153,7 +153,7 @@ async function runBotDetectionReport(sendFn, dateLabel, dateStr) {
 /**
  * 播报未绑定游戏号的QQ群成员
  */
-async function runUnlinkedReport(sendFn) {
+async function runUnlinkedReport(client) {
   const unlinked = await getUnlinkedQQMembers()
 
   if (unlinked.length === 0) return
@@ -165,8 +165,13 @@ async function runUnlinkedReport(sendFn) {
     lines.push(`  ${name}（QQ:${m.qq_id}）入群:${joinDate}`)
   }
 
-  await sendFn(lines.join('\n'))
-  console.log(`[播报] 未绑定成员播报已发送（${unlinked.length} 人）`)
+  const adminQQ = process.env.ADMIN_QQ
+  if (!adminQQ) {
+    console.log('[播报] 未配置 ADMIN_QQ，跳过未绑定成员私聊播报')
+    return
+  }
+  await client.sendPrivateMessage(Number(adminQQ), lines.join('\n'))
+  console.log(`[播报] 未绑定成员播报已私发至 ${adminQQ}（${unlinked.length} 人）`)
 }
 
 /**
@@ -205,7 +210,7 @@ export async function runReportForDate(client, groupId, dateStr, debugUserId = n
     console.error('[播报] 脚本号检测失败:', err.message)
   )
 
-  await runUnlinkedReport(sendFn).catch(err =>
+  await runUnlinkedReport(client).catch(err =>
     console.error('[播报] 未绑定成员播报失败:', err.message)
   )
 }

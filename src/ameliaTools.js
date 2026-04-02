@@ -125,6 +125,14 @@ export const TOOL_DEFINITIONS = [
   {
     type: 'function',
     function: {
+      name: 'check_hull_wear_status',
+      description: '清点所有在队且已分配舷号的成员，检查其游戏名中是否佩戴了舷号（即名字含 No.XXX 字样）。返回完整列表，含佩戴状态。',
+      parameters: { type: 'object', properties: {} }
+    }
+  },
+  {
+    type: 'function',
+    function: {
       name: 'query_hull_assignments',
       description: '查询指定时间范围内被授予舷号的成员列表。可按月份查询或查最近N天。',
       parameters: {
@@ -225,6 +233,9 @@ export async function executeAmeliaTool(toolName, args) {
       return { _imageFile: imgPath, view: 'blacklist' }
     }
 
+    case 'check_hull_wear_status':
+      return await _checkHullWearStatus(sb)
+
     case 'query_hull_owner':
       return await _queryHullOwner(sb, args.hull_number)
 
@@ -263,6 +274,40 @@ export async function executeAmeliaTool(toolName, args) {
   }
 }
 
+async function _checkHullWearStatus(sb) {
+  // 1. 拉取所有在队且已分配舷号（No.xxx）的成员
+  const { data: members, error } = await sb
+    .from('horizn_members')
+    .select('id, player_id, hull_number')
+    .like('hull_number', 'No.%')
+    .eq('active', true)
+    .order('hull_number', { ascending: true })
+  if (error) throw new Error(error.message)
+  if (!members?.length) return { total: 0, list: [] }
+
+  // 2. 批量拉取当前名称（group_index=0，按 is_primary DESC, last_seen DESC 取第一条）
+  const ids = members.map(m => m.id)
+  const { data: names } = await sb
+    .from('horizn_name_variants')
+    .select('member_id, name')
+    .in('member_id', ids)
+    .eq('group_index', 0)
+    .order('is_primary', { ascending: false })
+    .order('last_seen', { ascending: false })
+  // 每个成员只取第一条
+  const nameMap = {}
+  for (const n of (names || [])) {
+    if (!nameMap[n.member_id]) nameMap[n.member_id] = n.name
+  }
+
+  const list = members.map(m => ({
+    hull_number: m.hull_number,
+    current_name: nameMap[m.id] || m.player_id
+  }))
+
+  return { total: list.length, list }
+}
+
 async function _queryHullOwner(sb, hullNumber) {
   // 归一化：将 "102"、"No.102"、"no.102" 统一为 "No.102"
   let normalized
@@ -286,7 +331,9 @@ async function _queryHullOwner(sb, hullNumber) {
     sb.from('horizn_name_variants')
       .select('name')
       .eq('member_id', member.id)
+      .eq('group_index', 0)
       .order('is_primary', { ascending: false })
+      .order('last_seen', { ascending: false })
       .limit(1),
     sb.from('horizn_qq_accounts')
       .select('qq_id, nickname, join_time')
@@ -347,9 +394,11 @@ async function _queryHullAssignments(sb, month, recentDays) {
   if (memberIds.length) {
     const [namesRes, qqRes] = await Promise.all([
       sb.from('horizn_name_variants')
-        .select('member_id, name, is_primary')
+        .select('member_id, name')
         .in('member_id', memberIds)
-        .order('is_primary', { ascending: false }),
+        .eq('group_index', 0)
+        .order('is_primary', { ascending: false })
+        .order('last_seen', { ascending: false }),
       sb.from('horizn_qq_accounts')
         .select('member_id, qq_id, join_time')
         .in('member_id', memberIds)
@@ -617,6 +666,15 @@ export function formatToolResult(toolName, result) {
     case 'get_blacklist_image':
       return '已生成黑名单图片（含成员黑名单 + 外部黑名单），已发送到群聊。'
 
+    case 'check_hull_wear_status': {
+      if (!result.total) return '当前没有在队且已分配舷号的成员。'
+      const lines = [`在队舷号成员共 ${result.total} 人，舷号 → 当前游戏名列表如下（请逐一判断游戏名中是否包含该舷号标识）：`]
+      for (const m of result.list) {
+        lines.push(`${m.hull_number}  ${m.current_name}`)
+      }
+      return lines.join('\n')
+    }
+
     case 'query_hull_owner': {
       if (!result.found) return `舷号 No.${result.hull_number} 目前无人使用。`
       const lines = [
@@ -676,6 +734,7 @@ export function getToolLabel(toolName) {
     set_hull_number: '设置舷号',
     add_external_blacklist: '添加外部黑名单',
     delete_external_blacklist: '删除外部黑名单记录',
+    check_hull_wear_status: '清点舷号佩戴情况',
     query_hull_owner: '查询舷号归属',
     query_hull_assignments: '查询舷号授予记录',
     query_qq_joins: '查询QQ入群记录',

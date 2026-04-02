@@ -264,13 +264,22 @@ export async function executeAmeliaTool(toolName, args) {
 }
 
 async function _queryHullOwner(sb, hullNumber) {
+  // 归一化：将 "102"、"No.102"、"no.102" 统一为 "No.102"
+  let normalized
+  if (/^No\./i.test(hullNumber)) {
+    normalized = 'No.' + hullNumber.replace(/^[Nn][Oo]\./, '')
+  } else {
+    const digits = hullNumber.replace(/\D/g, '')
+    normalized = 'No.' + digits.replace(/^0+/, '').padStart(3, '0')
+  }
+
   const { data, error } = await sb
     .from('horizn_members')
     .select('id, player_id, hull_number, hull_date, active, is_blacklisted')
-    .eq('hull_number', hullNumber)
+    .eq('hull_number', normalized)
     .limit(1)
   if (error) throw new Error(error.message)
-  if (!data?.length) return { found: false, hull_number: hullNumber }
+  if (!data?.length) return { found: false, hull_number: normalized }
 
   const member = data[0]
   const [nameRes, qqRes] = await Promise.all([
@@ -324,7 +333,7 @@ async function _queryHullAssignments(sb, month, recentDays) {
   const { data, error } = await sb
     .from('horizn_members')
     .select('id, player_id, hull_number, hull_date, active')
-    .not('hull_number', 'is', null)
+    .like('hull_number', 'No.%')
     .gte('hull_date', dateFrom)
     .lte('hull_date', dateTo)
     .order('hull_date', { ascending: true })
@@ -447,7 +456,7 @@ async function _queryQQJoins(sb, month, recentDays) {
 
 async function _getHullStats(sb) {
   const [hullRes, memberBlRes, extBlRes] = await Promise.all([
-    sb.from('horizn_members').select('hull_number').not('hull_number', 'is', null),
+    sb.from('horizn_members').select('hull_number').like('hull_number', 'No.%'),
     sb.from('horizn_members').select('id', { count: 'exact', head: true }).eq('is_blacklisted', true),
     sb.from('horizn_blacklist_else').select('id', { count: 'exact', head: true })
   ])

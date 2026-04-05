@@ -147,7 +147,7 @@ export async function getPlayerFullInfo(playerId) {
   // 1. 查询成员主表
   const { data: members, error: memberError } = await supabase
     .from('horizn_members')
-    .select('id, player_id, member_number, hull_number, hull_date, active, is_second_team, is_blacklisted, blacklist_date, blacklist_note')
+    .select('id, player_id, member_number, active, is_second_team, is_blacklisted, blacklist_date, blacklist_note')
     .eq('player_id', playerId)
     .limit(1)
 
@@ -156,8 +156,8 @@ export async function getPlayerFullInfo(playerId) {
   if (members && members.length > 0) {
     const member = members[0]
 
-    // 并行查询入离队历史 + QQ账号 + 主名字
-    const [eventsResult, qqResult, nameResult] = await Promise.all([
+    // 并行查询入离队历史 + QQ账号 + 主名字 + 当前舷号
+    const [eventsResult, qqResult, nameResult, hullResult] = await Promise.all([
       supabase
         .from('horizn_membership_events')
         .select('event_type, event_time, is_kicked')
@@ -176,17 +176,25 @@ export async function getPlayerFullInfo(playerId) {
         .order('is_primary', { ascending: false })
         .order('group_index', { ascending: true })
         .order('last_seen', { ascending: false })
+        .limit(1),
+      supabase
+        .from('horizn_hull_assignments')
+        .select('hull_number, assigned_at, notes')
+        .eq('player_id', playerId)
+        .is('revoked_at', null)
         .limit(1)
     ])
 
     if (eventsResult.error) console.error('[Supabase] 事件查询失败:', eventsResult.error)
     if (qqResult.error) console.error('[Supabase] QQ账号查询失败:', qqResult.error)
     if (nameResult.error) console.error('[Supabase] 名字查询失败:', nameResult.error)
+    if (hullResult.error) console.error('[Supabase] 舷号查询失败:', hullResult.error)
 
     return {
       found: 'member',
       member,
       primaryName: nameResult.data?.[0]?.name || null,
+      hullAssignment: hullResult.data?.[0] || null,
       events: eventsResult.data || [],
       qqAccounts: qqResult.data || []
     }

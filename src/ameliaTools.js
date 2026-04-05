@@ -206,13 +206,16 @@ export async function executeAmeliaTool(toolName, args) {
     }
 
     case 'set_hull_number': {
-      const date = args.hull_date || new Date().toISOString().slice(0, 10)
-      const { error } = await sb
-        .from('horizn_members')
-        .update({ hull_number: args.hull_number, hull_date: date })
-        .eq('player_id', args.player_id)
+      const digits = String(args.hull_number).replace(/\D/g, '')
+      const formatted = 'No.' + digits.padStart(3, '0')
+      const { data, error } = await sb.rpc('horizn_assign_hull', {
+        p_player_id: args.player_id,
+        p_hull_number: formatted,
+        p_notes: args.hull_date ? `授舷日期：${args.hull_date}` : null
+      })
       if (error) throw new Error(error.message)
-      return { success: true, player_id: args.player_id, hull_number: args.hull_number, hull_date: date }
+      if (data && !data.success) throw new Error(data.error || '分配失败')
+      return { success: true, player_id: args.player_id, hull_number: formatted }
     }
 
     case 'get_hull_stats':
@@ -275,34 +278,35 @@ export async function executeAmeliaTool(toolName, args) {
 }
 
 async function _checkHullWearStatus(sb) {
-  // 1. 拉取所有在队且已分配舷号（No.xxx）的成员
-  const { data: members, error } = await sb
-    .from('horizn_members')
-    .select('id, player_id, hull_number')
-    .like('hull_number', 'No.%')
-    .eq('active', true)
+  // 1. 拉取所有在役舷号分配（包含 member_active 和 primary_name 反规范化字段）
+  const { data: assignments, error } = await sb
+    .from('horizn_hull_assignments')
+    .select('hull_number, player_id, member_id, primary_name, member_active')
+    .is('revoked_at', null)
+    .eq('member_active', true)
     .order('hull_number', { ascending: true })
   if (error) throw new Error(error.message)
-  if (!members?.length) return { total: 0, list: [] }
+  if (!assignments?.length) return { total: 0, list: [] }
 
-  // 2. 批量拉取当前名称（group_index=0，按 is_primary DESC, last_seen DESC 取第一条）
-  const ids = members.map(m => m.id)
-  const { data: names } = await sb
-    .from('horizn_name_variants')
-    .select('member_id, name')
-    .in('member_id', ids)
-    .eq('group_index', 0)
-    .order('is_primary', { ascending: false })
-    .order('last_seen', { ascending: false })
-  // 每个成员只取第一条
+  // 2. 批量拉取当前名称（覆盖反规范化字段，取最新值）
+  const ids = [...new Set(assignments.map(a => a.member_id).filter(Boolean))]
   const nameMap = {}
-  for (const n of (names || [])) {
-    if (!nameMap[n.member_id]) nameMap[n.member_id] = n.name
+  if (ids.length) {
+    const { data: names } = await sb
+      .from('horizn_name_variants')
+      .select('member_id, name')
+      .in('member_id', ids)
+      .eq('group_index', 0)
+      .order('is_primary', { ascending: false })
+      .order('last_seen', { ascending: false })
+    for (const n of (names || [])) {
+      if (!nameMap[n.member_id]) nameMap[n.member_id] = n.name
+    }
   }
 
-  const list = members.map(m => ({
-    hull_number: m.hull_number,
-    current_name: nameMap[m.id] || m.player_id
+  const list = assignments.map(a => ({
+    hull_number: a.hull_number,
+    current_name: nameMap[a.member_id] || a.primary_name || a.player_id
   }))
 
   return { total: list.length, list }
@@ -312,48 +316,39 @@ async function _queryHullOwner(sb, hullNumber) {
   // 归一化：将 "102"、"No.102"、"no.102" 统一为 "No.102"
   let normalized
   if (/^No\./i.test(hullNumber)) {
-    normalized = 'No.' + hullNumber.replace(/^[Nn][Oo]\./, '')
+    normalized = 'No.' + hullNumber.replace(/^[Nn][Oo]\./, '').padStart(3, '0')
   } else {
     const digits = hullNumber.replace(/\D/g, '')
-    normalized = 'No.' + digits.replace(/^0+/, '').padStart(3, '0')
+    normalized = 'No.' + digits.padStart(3, '0')
   }
 
   const { data, error } = await sb
-    .from('horizn_members')
-    .select('id, player_id, hull_number, hull_date, active, is_blacklisted')
+    .from('horizn_hull_assignments')
+    .select('player_id, member_id, hull_number, assigned_at, notes, member_active, primary_name, qq_id, qq_join_time')
     .eq('hull_number', normalized)
+    .is('revoked_at', null)
     .limit(1)
   if (error) throw new Error(error.message)
   if (!data?.length) return { found: false, hull_number: normalized }
 
-  const member = data[0]
-  const [nameRes, qqRes] = await Promise.all([
-    sb.from('horizn_name_variants')
-      .select('name')
-      .eq('member_id', member.id)
-      .eq('group_index', 0)
-      .order('is_primary', { ascending: false })
-      .order('last_seen', { ascending: false })
-      .limit(1),
-    sb.from('horizn_qq_accounts')
-      .select('qq_id, nickname, join_time')
-      .eq('member_id', member.id)
-      .eq('is_ignored', false)
-      .order('join_time', { ascending: true })
-      .limit(1)
-  ])
+  const a = data[0]
+  // 查是否黑名单
+  const { data: memberData } = await sb
+    .from('horizn_members')
+    .select('is_blacklisted')
+    .eq('player_id', a.player_id)
+    .limit(1)
 
-  const qq = qqRes.data?.[0]
   return {
     found: true,
-    hull_number: hullNumber,
-    player_id: member.player_id,
-    primary_name: nameRes.data?.[0]?.name || null,
-    hull_date: member.hull_date,
-    active: member.active,
-    is_blacklisted: member.is_blacklisted,
-    qq_id: qq?.qq_id || null,
-    qq_join_time: qq?.join_time ? String(qq.join_time).slice(0, 10) : null
+    hull_number: normalized,
+    player_id: a.player_id,
+    primary_name: a.primary_name || null,
+    hull_date: a.assigned_at ? String(a.assigned_at).slice(0, 10) : null,
+    active: a.member_active,
+    is_blacklisted: memberData?.[0]?.is_blacklisted || false,
+    qq_id: a.qq_id || null,
+    qq_join_time: a.qq_join_time ? String(a.qq_join_time).slice(0, 10) : null
   }
 }
 
@@ -378,58 +373,28 @@ async function _queryHullAssignments(sb, month, recentDays) {
   }
 
   const { data, error } = await sb
-    .from('horizn_members')
-    .select('id, player_id, hull_number, hull_date, active')
-    .like('hull_number', 'No.%')
-    .gte('hull_date', dateFrom)
-    .lte('hull_date', dateTo)
-    .order('hull_date', { ascending: true })
+    .from('horizn_hull_assignments')
+    .select('player_id, member_id, hull_number, assigned_at, member_active, primary_name, qq_id, qq_join_time')
+    .gte('assigned_at', dateFrom)
+    .lte('assigned_at', dateTo + 'T23:59:59Z')
+    .order('assigned_at', { ascending: true })
 
   if (error) throw new Error(error.message)
-
-  // batch fetch names + QQ accounts
-  const memberIds = (data || []).map(m => m.id)
-  let nameMap = {}
-  let qqMap = {}
-  if (memberIds.length) {
-    const [namesRes, qqRes] = await Promise.all([
-      sb.from('horizn_name_variants')
-        .select('member_id, name')
-        .in('member_id', memberIds)
-        .eq('group_index', 0)
-        .order('is_primary', { ascending: false })
-        .order('last_seen', { ascending: false }),
-      sb.from('horizn_qq_accounts')
-        .select('member_id, qq_id, join_time')
-        .in('member_id', memberIds)
-        .eq('is_ignored', false)
-        .order('join_time', { ascending: true })
-    ])
-    for (const n of (namesRes.data || [])) {
-      if (!nameMap[n.member_id]) nameMap[n.member_id] = n.name
-    }
-    for (const q of (qqRes.data || [])) {
-      if (!qqMap[q.member_id]) qqMap[q.member_id] = q
-    }
-  }
 
   return {
     label,
     dateFrom,
     dateTo,
     count: (data || []).length,
-    members: (data || []).map(m => {
-      const qq = qqMap[m.id]
-      return {
-        player_id: m.player_id,
-        primary_name: nameMap[m.id] || null,
-        hull_number: m.hull_number,
-        hull_date: m.hull_date,
-        active: m.active,
-        qq_id: qq?.qq_id || null,
-        qq_join_time: qq?.join_time ? String(qq.join_time).slice(0, 10) : null
-      }
-    })
+    members: (data || []).map(a => ({
+      player_id: a.player_id,
+      primary_name: a.primary_name || null,
+      hull_number: a.hull_number,
+      hull_date: a.assigned_at ? String(a.assigned_at).slice(0, 10) : null,
+      active: a.member_active,
+      qq_id: a.qq_id || null,
+      qq_join_time: a.qq_join_time ? String(a.qq_join_time).slice(0, 10) : null
+    }))
   }
 }
 
@@ -461,18 +426,15 @@ async function _queryQQJoins(sb, month, recentDays) {
 
   if (error) throw new Error(error.message)
 
-  // batch fetch member info (name, hull, active)
+  // batch fetch member info (name, active) + hull assignments
   const memberIds = [...new Set((data || []).filter(q => q.member_id).map(q => q.member_id))]
   let memberMap = {}
+  let hullMap = {}
   if (memberIds.length) {
-    const [membersRes, namesRes] = await Promise.all([
-      sb.from('horizn_members')
-        .select('id, player_id, hull_number, active')
-        .in('id', memberIds),
-      sb.from('horizn_name_variants')
-        .select('member_id, name, is_primary')
-        .in('member_id', memberIds)
-        .order('is_primary', { ascending: false })
+    const [membersRes, namesRes, hullRes] = await Promise.all([
+      sb.from('horizn_members').select('id, player_id, active').in('id', memberIds),
+      sb.from('horizn_name_variants').select('member_id, name, is_primary').in('member_id', memberIds).order('is_primary', { ascending: false }),
+      sb.from('horizn_hull_assignments').select('player_id, hull_number').is('revoked_at', null).in('member_id', memberIds)
     ])
     const nameMap = {}
     for (const n of (namesRes.data || [])) {
@@ -480,6 +442,9 @@ async function _queryQQJoins(sb, month, recentDays) {
     }
     for (const m of (membersRes.data || [])) {
       memberMap[m.id] = { ...m, primary_name: nameMap[m.id] || null }
+    }
+    for (const h of (hullRes.data || [])) {
+      hullMap[h.player_id] = h.hull_number
     }
   }
 
@@ -496,7 +461,7 @@ async function _queryQQJoins(sb, month, recentDays) {
         qq_join_time: q.join_time ? String(q.join_time).slice(0, 10) : null,
         player_id: m?.player_id || null,
         primary_name: m?.primary_name || null,
-        hull_number: m?.hull_number || null,
+        hull_number: m?.player_id ? (hullMap[m.player_id] || null) : null,
         active: m?.active ?? null
       }
     })
@@ -505,13 +470,13 @@ async function _queryQQJoins(sb, month, recentDays) {
 
 async function _getHullStats(sb) {
   const [hullRes, memberBlRes, extBlRes] = await Promise.all([
-    sb.from('horizn_members').select('hull_number').like('hull_number', 'No.%'),
+    sb.from('horizn_hull_assignments').select('hull_number').is('revoked_at', null),
     sb.from('horizn_members').select('id', { count: 'exact', head: true }).eq('is_blacklisted', true),
     sb.from('horizn_blacklist_else').select('id', { count: 'exact', head: true })
   ])
 
   const nums = (hullRes.data || [])
-    .map(m => parseInt(m.hull_number)).filter(n => !isNaN(n)).sort((a, b) => a - b)
+    .map(m => parseInt(m.hull_number.replace('No.', ''))).filter(n => !isNaN(n)).sort((a, b) => a - b)
   const occupied = new Set(nums)
   const maxHull = nums.length ? Math.max(...nums) : 0
 
@@ -544,7 +509,7 @@ async function _searchMember(sb, query) {
   if (isPlayerId) {
     const { data: members, error } = await sb
       .from('horizn_members')
-      .select('id, player_id, member_number, hull_number, hull_date, active, is_blacklisted, blacklist_date, blacklist_note')
+      .select('id, player_id, member_number, active, is_blacklisted, blacklist_date, blacklist_note')
       .eq('player_id', query)
       .limit(1)
     if (error) throw new Error(error.message)
@@ -560,7 +525,7 @@ async function _searchMember(sb, query) {
     }
 
     const member = members[0]
-    const [nameRes, eventsRes] = await Promise.all([
+    const [nameRes, eventsRes, hullRes] = await Promise.all([
       sb.from('horizn_name_variants')
         .select('name')
         .eq('member_id', member.id)
@@ -570,11 +535,18 @@ async function _searchMember(sb, query) {
         .select('event_type, event_time, is_kicked')
         .eq('player_id', query)
         .order('event_time', { ascending: false })
-        .limit(5)
+        .limit(5),
+      sb.from('horizn_hull_assignments')
+        .select('hull_number, assigned_at')
+        .eq('player_id', query)
+        .is('revoked_at', null)
+        .limit(1)
     ])
     return {
       type: 'member',
       ...member,
+      hull_number: hullRes.data?.[0]?.hull_number || null,
+      hull_date: hullRes.data?.[0]?.assigned_at ? String(hullRes.data[0].assigned_at).slice(0, 10) : null,
       primary_name: nameRes.data?.[0]?.name || null,
       recent_events: eventsRes.data || []
     }

@@ -110,7 +110,7 @@ function formatPlayerInfo(playerId, info, activity = null) {
   }
 
   // found === 'member'
-  const { member, primaryName, events, qqAccounts } = info
+  const { member, primaryName, hullAssignment, events, qqAccounts } = info
 
   // 黑名单警告（置顶）
   if (member.is_blacklisted) {
@@ -122,8 +122,8 @@ function formatPlayerInfo(playerId, info, activity = null) {
   if (primaryName) lines.push(`游戏名：${primaryName}`)
 
   // 成员编号 + 舷号
-  const hullStr = member.hull_number
-    ? `${member.hull_number}（${member.hull_date ? fmtDate(member.hull_date) : '日期未知'}）`
+  const hullStr = hullAssignment
+    ? `${hullAssignment.hull_number}（${hullAssignment.assigned_at ? fmtDate(hullAssignment.assigned_at) : '日期未知'}）`
     : '无'
   const numStr = member.member_number ? `成员编号：${member.member_number}  ` : ''
   lines.push(`${numStr}舷号：${hullStr}`)

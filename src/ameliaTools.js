@@ -161,6 +161,20 @@ export const TOOL_DEFINITIONS = [
   {
     type: 'function',
     function: {
+      name: 'end_session',
+      description: '当用户明确表示想结束对话（如"退下""不用了""结束""拜拜"等）时调用此工具，结束本次会话。注意：仅在用户明确表达结束意图时才调用，不要因为话题中偶然出现"退出""结束"等词就调用。',
+      parameters: {
+        type: 'object',
+        properties: {
+          farewell: { type: 'string', description: '向用户说的告别语，简短自然' }
+        },
+        required: ['farewell']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
       name: 'delete_external_blacklist',
       description: '从外部黑名单删除指定记录。此操作需要管理员确认。',
       parameters: {
@@ -235,6 +249,9 @@ export async function executeAmeliaTool(toolName, args) {
       const imgPath = await generateHullSeatmapImage('blacklist')
       return { _imageFile: imgPath, view: 'blacklist' }
     }
+
+    case 'end_session':
+      return { _endSession: true, farewell: args.farewell }
 
     case 'check_hull_wear_status':
       return await _checkHullWearStatus(sb)

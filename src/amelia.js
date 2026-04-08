@@ -312,6 +312,13 @@ export async function processAmeliaMessage({
         const statusMsgId = await sendReply(`🔧 正在${getToolLabel(toolName)}...`)
         try {
           const result = await executeAmeliaTool(toolName, args)
+          // end_session：发告别语后关闭会话
+          if (result._endSession) {
+            await recallMessage(statusMsgId)
+            await sendReply(result.farewell)
+            _endSession(userId, 'dismissed')
+            return
+          }
           // 若工具返回图片文件，直接发图到群
           if (result._imageFile) {
             try {

@@ -566,27 +566,38 @@ async function _searchMember(sb, query) {
       recent_events: eventsRes.data || []
     }
   } else {
-    // 按游戏名模糊搜索
-    const { data: names, error } = await sb
-      .from('horizn_name_variants')
-      .select('name, member_id')
-      .ilike('name', `%${query}%`)
-      .limit(5)
-    if (error) throw new Error(error.message)
-    if (!names?.length) return { type: 'not_found', query }
+    // 按游戏名模糊搜索：同时查成员名称变体 + 外部黑名单
+    const [namesRes, extBlRes] = await Promise.all([
+      sb.from('horizn_name_variants')
+        .select('name, member_id')
+        .ilike('name', `%${query}%`)
+        .limit(5),
+      sb.from('horizn_blacklist_else')
+        .select('id, name, player_id, qq_number, note, blacklist_date')
+        .ilike('name', `%${query}%`)
+        .limit(5)
+    ])
+    if (namesRes.error) throw new Error(namesRes.error.message)
 
-    const memberIds = [...new Set(names.map(n => n.member_id))]
-    const { data: members } = await sb
-      .from('horizn_members')
-      .select('id, player_id, member_number, active, is_blacklisted')
-      .in('id', memberIds)
+    const memberIds = [...new Set((namesRes.data || []).map(n => n.member_id))]
+    const { data: members } = memberIds.length
+      ? await sb.from('horizn_members')
+          .select('id, player_id, member_number, active, is_blacklisted')
+          .in('id', memberIds)
+      : { data: [] }
+
+    const memberResults = (members || []).map(m => ({
+      ...m,
+      matched_name: namesRes.data.find(n => n.member_id === m.id)?.name
+    }))
+    const extResults = extBlRes.data || []
+
+    if (!memberResults.length && !extResults.length) return { type: 'not_found', query }
     return {
       type: 'name_search',
       query,
-      results: (members || []).map(m => ({
-        ...m,
-        matched_name: names.find(n => n.member_id === m.id)?.name
-      }))
+      results: memberResults,
+      external_blacklist: extResults
     }
   }
 }
@@ -619,11 +630,21 @@ export function formatToolResult(toolName, result) {
         ].join('\n')
       }
       if (result.type === 'name_search') {
-        if (!result.results?.length) return `未找到名称含"${result.query}"的成员。`
-        return `找到 ${result.results.length} 个：\n` +
-          result.results.map(m =>
-            `  ${m.matched_name || m.player_id}（${m.player_id}）${m.active ? '' : ' [离队]'}${m.is_blacklisted ? ' ⚠️' : ''}`
-          ).join('\n')
+        const lines = []
+        if (result.results?.length) {
+          lines.push(`成员（${result.results.length}）：`)
+          for (const m of result.results) {
+            lines.push(`  ${m.matched_name || m.player_id}（${m.player_id}）${m.active ? '' : ' [离队]'}${m.is_blacklisted ? ' ⚠️' : ''}`)
+          }
+        }
+        if (result.external_blacklist?.length) {
+          lines.push(`外部黑名单（${result.external_blacklist.length}）：`)
+          for (const b of result.external_blacklist) {
+            lines.push(`  ${b.name}${b.player_id ? `（${b.player_id}）` : ''} [id:${b.id}]${b.note ? ` 原因:${b.note}` : ''}`)
+          }
+        }
+        if (!lines.length) return `未找到名称含"${result.query}"的相关记录。`
+        return lines.join('\n')
       }
       return JSON.stringify(result)
     }

@@ -63,14 +63,15 @@ export const TOOL_DEFINITIONS = [
     type: 'function',
     function: {
       name: 'add_external_blacklist',
-      description: '将非成员玩家加入外部黑名单（horizn_blacklist_else 表）。player_id 可不填。',
+      description: '将非成员玩家加入外部黑名单。若之前已通过 search_member 查到该玩家的 player_id，必须将其一并传入。blacklist_date 默认今天，可手动指定。',
       parameters: {
         type: 'object',
         properties: {
           name: { type: 'string', description: '玩家游戏名（必填）' },
-          player_id: { type: 'string', description: '游戏ID（可选）' },
+          player_id: { type: 'string', description: '游戏ID，从 search_member 结果中获取' },
           qq_number: { type: 'string', description: 'QQ号（可选）' },
-          note: { type: 'string', description: '拉黑原因（可选）' }
+          note: { type: 'string', description: '拉黑原因（可选）' },
+          blacklist_date: { type: 'string', description: '拉黑日期 YYYY-MM-DD，默认今天' }
         },
         required: ['name']
       }
@@ -266,13 +267,15 @@ export async function executeAmeliaTool(toolName, args) {
       return await _queryQQJoins(sb, args.month, args.recent_days)
 
     case 'add_external_blacklist': {
+      const today = new Date().toISOString().slice(0, 10)
       const { error } = await sb
         .from('horizn_blacklist_else')
         .insert({
           name: args.name,
           player_id: args.player_id || null,
           qq_number: args.qq_number || null,
-          note: args.note || null
+          note: args.note || null,
+          blacklist_date: args.blacklist_date || today
         })
       if (error) throw new Error(error.message)
       return { success: true, name: args.name, player_id: args.player_id || null }

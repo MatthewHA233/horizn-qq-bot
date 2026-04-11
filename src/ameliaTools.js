@@ -63,16 +63,16 @@ export const TOOL_DEFINITIONS = [
     type: 'function',
     function: {
       name: 'add_external_blacklist',
-      description: '将非成员玩家加入外部黑名单（horizn_blacklist_else 表）',
+      description: '将非成员玩家加入外部黑名单（horizn_blacklist_else 表）。player_id 可不填。',
       parameters: {
         type: 'object',
         properties: {
-          player_id: { type: 'string' },
-          name: { type: 'string', description: '玩家游戏名' },
+          name: { type: 'string', description: '玩家游戏名（必填）' },
+          player_id: { type: 'string', description: '游戏ID（可选）' },
           qq_number: { type: 'string', description: 'QQ号（可选）' },
           note: { type: 'string', description: '拉黑原因（可选）' }
         },
-        required: ['player_id', 'name']
+        required: ['name']
       }
     }
   },
@@ -176,13 +176,13 @@ export const TOOL_DEFINITIONS = [
     type: 'function',
     function: {
       name: 'delete_external_blacklist',
-      description: '从外部黑名单删除指定记录。此操作需要管理员确认。',
+      description: '从外部黑名单删除指定记录（按记录 id 删除）。此操作需要管理员确认。',
       parameters: {
         type: 'object',
         properties: {
-          player_id: { type: 'string' }
+          id: { type: 'string', description: '记录的 UUID，从 search_member 查询结果中获取' }
         },
-        required: ['player_id']
+        required: ['id']
       }
     }
   }
@@ -266,27 +266,25 @@ export async function executeAmeliaTool(toolName, args) {
       return await _queryQQJoins(sb, args.month, args.recent_days)
 
     case 'add_external_blacklist': {
-      const today = new Date().toISOString().slice(0, 10)
       const { error } = await sb
         .from('horizn_blacklist_else')
-        .upsert({
-          player_id: args.player_id,
+        .insert({
           name: args.name,
+          player_id: args.player_id || null,
           qq_number: args.qq_number || null,
-          note: args.note || null,
-          blacklist_date: today
-        }, { onConflict: 'player_id' })
+          note: args.note || null
+        })
       if (error) throw new Error(error.message)
-      return { success: true, player_id: args.player_id, name: args.name }
+      return { success: true, name: args.name, player_id: args.player_id || null }
     }
 
     case 'delete_external_blacklist': {
       const { error } = await sb
         .from('horizn_blacklist_else')
         .delete()
-        .eq('player_id', args.player_id)
+        .eq('id', args.id)
       if (error) throw new Error(error.message)
-      return { success: true, player_id: args.player_id }
+      return { success: true, id: args.id }
     }
 
     default:
@@ -534,7 +532,7 @@ async function _searchMember(sb, query) {
     if (!members?.length) {
       const { data: bl } = await sb
         .from('horizn_blacklist_else')
-        .select('name, player_id, qq_number, note, blacklist_date')
+        .select('id, name, player_id, qq_number, note, blacklist_date')
         .eq('player_id', query)
         .limit(1)
       if (bl?.length) return { type: 'external_blacklist', ...bl[0] }
@@ -708,9 +706,9 @@ export function formatToolResult(toolName, result) {
     case 'set_hull_number':
       return `已为 ${result.player_id} 设置舷号 No.${result.hull_number}（${result.hull_date}）。`
     case 'add_external_blacklist':
-      return `已将 ${result.name}（${result.player_id}）加入外部黑名单。`
+      return `已将 ${result.name}${result.player_id ? `（${result.player_id}）` : ''} 加入外部黑名单。`
     case 'delete_external_blacklist':
-      return `已从外部黑名单删除 ${result.player_id}。`
+      return `已从外部黑名单删除该记录（id: ${result.id}）。`
     default:
       return JSON.stringify(result)
   }

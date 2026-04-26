@@ -3,6 +3,18 @@
  * 成员档案查询 + QQ群成员同步
  */
 import 'dotenv/config'
+
+// 全局日志时间戳
+const _ts = () => {
+  const d = new Date()
+  const pad = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+const _origLog = console.log.bind(console)
+const _origErr = console.error.bind(console)
+console.log = (...args) => _origLog(`[${_ts()}]`, ...args)
+console.error = (...args) => _origErr(`[${_ts()}]`, ...args)
+
 import { NapCatClient } from './napcat.js'
 import { initSupabase } from './supabase.js'
 import { createMessageHandler } from './handler.js'

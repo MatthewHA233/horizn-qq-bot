@@ -3,8 +3,8 @@
  * - 管理群 @艾米莉亚 触发，单用户持久会话，最多 30 轮
  * - 使用阿里云百炼 DashScope OpenAI 兼容接口
  * - 支持 function calling 工具（查询/黑名单/舷号管理）
- * - 需要确认的操作：AI 调用工具 → 向用户发确认气泡 → 用户自然语言回复
- *   → AI 重新判断是否继续执行（无硬编码关键词）
+ * - 需要确认的操作：AI 调用工具 → 向用户发确认气泡 → 用户明确回复“确认”
+ *   → 系统执行原始待确认工具及参数，避免 AI 二次生成时丢失或篡改操作
  * - 会话结束后将对话记录保存到本地 logs/amelia/
  */
 import fs from 'fs'
@@ -25,6 +25,34 @@ const DASHSCOPE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/co
 const MAX_USER_TURNS = 30
 const SESSION_IDLE_MS = 60 * 1000   // 1分钟无消息自动结束
 
+const CONFIRM_WORDS = new Set(['确认', '确定', '同意', '执行', '可以', '好', '好的', '是', '是的'])
+const CANCEL_WORDS = new Set(['取消', '不要', '不用', '不同意', '不执行', '否', '不是', '算了', '停止'])
+
+function normalizeShortReply(text) {
+  return String(text ?? '')
+    .normalize('NFKC')
+    .trim()
+    .replace(/[\s，,。.!！?？、]+$/g, '')
+}
+
+/**
+ * 二次确认只接受明确的短回复；其余内容按取消处理，避免误执行写操作。
+ */
+export function classifyConfirmationReply(text) {
+  const normalized = normalizeShortReply(text)
+  if (CONFIRM_WORDS.has(normalized)) return 'confirm'
+  if (CANCEL_WORDS.has(normalized)) return 'cancel'
+  return 'unknown'
+}
+
+/**
+ * 查询只是复合写操作的第一步时，不能把完整档案发完就提前结束 AI loop。
+ */
+export function shouldContinueAfterSearch(text) {
+  const normalized = String(text ?? '').normalize('NFKC')
+  return /(黑名单|拉黑|解黑|移出黑名单|解除黑名单|取消黑名单|设置舷号|分配舷号|授予舷号|修改舷号|更改舷号)/.test(normalized)
+}
+
 function buildSystemPrompt() {
   const now = new Date()
   const pad = n => String(n).padStart(2, '0')
@@ -34,11 +62,10 @@ function buildSystemPrompt() {
   职责：帮管理员查询成员档案、管理黑名单和舷号。
   风格：简洁，使用中文；普通回答不超过200字，成员完整档案不受此限制。
   查询规则：用户提供玩家ID、QQ号、QQ群名片/昵称、当前或历史游戏名时，必须调用 search_member。不要自行声称“没有权限”；只有工具明确返回权限错误时才能这样说明。
+  复合操作规则：用户要求按名字、QQ号或群名片执行加入/解除黑名单、设置舷号等操作时，必须先调用 search_member。唯一命中后使用工具返回的真实 player_id 继续完成原请求，不要停在查询结果，也绝不能把名字或QQ号伪装成 player_id。若有多个候选则请用户明确选择；没有成员记录时，加入黑名单应改用 add_external_blacklist。
 重要：成员的游戏名（player_id / name）必须原样引用，不得删改任何部分。例如「地平线『No.188』孤独与风」应完整输出，禁止缩写为「孤独与风」。
 概念区分：「佩戴舷号」指成员的游戏名中包含舷号字段（如名字里含有 No.XXX 字样），与数据库 hull_number 列无关。查询谁佩戴/未佩戴舷号时，应检查成员游戏名是否含有 No.\d+ 模式。
-关于确认操作：当你调用需要确认的工具时，系统会自动暂停并询问用户。
-用户回复后你会重新收到对话，请根据用户的回复判断是否继续执行该工具。
-用户明确同意则再次调用工具；用户拒绝或犹豫则取消并说明。`
+关于确认操作：当你调用需要确认的工具时，系统会自动暂停并询问用户；用户明确确认后，系统会执行原始工具和参数，无需你再次调用。`
 }
 
 // ============================================================
@@ -55,7 +82,6 @@ class Session {
     this.userTurnCount = 0
     this.lastActivity = Date.now()
     this.pendingConfirm = null
-    this.awaitingExecution = false
     this.id = `${Date.now()}_${userId}`
     this.timer = null
   }
@@ -203,12 +229,39 @@ export async function processAmeliaMessage({
 
   let session = getSession(userId)
 
-  // ── pendingConfirm：用户回复了确认/拒绝，设标记后继续走 AI loop ──
-  // 不做关键词判断，把用户的自然语言回复交给 AI 去理解
+  // ── pendingConfirm：确定性执行原始待确认动作 ─────────────────
   if (session?.pendingConfirm) {
+    const pending = session.pendingConfirm
     session.pendingConfirm = null
-    session.awaitingExecution = true
-    // 继续向下，把用户消息加入历史，进入 AI loop
+    session.push({ role: 'user', content: text })
+    session.userTurnCount++
+    _resetIdleTimer(session)
+
+    const decision = classifyConfirmationReply(text)
+    if (decision !== 'confirm') {
+      const cancelled = decision === 'cancel'
+        ? `已取消${getToolLabel(pending.toolName)}。`
+        : `未收到明确的“确认”，已取消${getToolLabel(pending.toolName)}。`
+      session.push({ role: 'assistant', content: cancelled })
+      await sendReply(cancelled)
+      return
+    }
+
+    const statusMsgId = await sendReply(`🔧 正在${getToolLabel(pending.toolName)}...`)
+    try {
+      const result = await executeAmeliaTool(pending.toolName, pending.args)
+      const resultText = formatToolResult(pending.toolName, result)
+      session.push({ role: 'assistant', content: resultText })
+      await recallMessage(statusMsgId)
+      await sendReply(resultText)
+    } catch (err) {
+      console.error(`[Amelia] 已确认工具 ${pending.toolName} 失败:`, err.message)
+      const failed = `${getToolLabel(pending.toolName)}失败：${err.message}`
+      session.push({ role: 'assistant', content: failed })
+      await recallMessage(statusMsgId)
+      await sendReply(failed)
+    }
+    return
   }
 
   // ── 构建用户消息（支持多模态）─────────────────────────────────
@@ -282,7 +335,6 @@ export async function processAmeliaMessage({
 
     // 纯文本回复
     if (!assistantMsg.tool_calls?.length) {
-      session.awaitingExecution = false
       await sendReply(assistantMsg.content || '（无回复）')
       return
     }
@@ -296,7 +348,7 @@ export async function processAmeliaMessage({
       let args
       try { args = JSON.parse(toolCall.function.arguments) } catch { args = {} }
 
-      if (CONFIRM_REQUIRED_TOOLS.has(toolName) && !session.awaitingExecution) {
+      if (CONFIRM_REQUIRED_TOOLS.has(toolName)) {
         // 需要确认：先插一条占位 tool result（保持消息格式合法），再发确认气泡
         const confirmMsg = buildConfirmMessage(toolName, args)
         session.push({
@@ -305,13 +357,12 @@ export async function processAmeliaMessage({
           name: toolName,
           content: `[等待管理员确认] 已发送确认请求：「${confirmMsg}」`
         })
-        session.pendingConfirm = { toolCallId: toolCall.id, toolName, args }
+        session.pendingConfirm = { toolName, args }
         await sendReply(confirmMsg)
         waitForConfirm = true
         break
       } else {
-        // 直接执行（普通工具 或 awaitingExecution=true 已确认）
-        session.awaitingExecution = false
+        // 普通工具直接执行；需要确认的工具只会在上方挂起
         const statusMsgId = await sendReply(`🔧 正在${getToolLabel(toolName)}...`)
         try {
           const result = await executeAmeliaTool(toolName, args)
@@ -345,7 +396,7 @@ export async function processAmeliaMessage({
     }
 
     if (waitForConfirm) return
-    if (onlySearchTools && directSearchReplies.length) {
+    if (onlySearchTools && directSearchReplies.length && !shouldContinueAfterSearch(text)) {
       await sendReply(directSearchReplies.join('\n\n'))
       return
     }

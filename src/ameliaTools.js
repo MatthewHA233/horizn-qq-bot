@@ -32,7 +32,7 @@ export const TOOL_DEFINITIONS = [
     type: 'function',
     function: {
       name: 'set_member_blacklist',
-      description: '设置或解除成员黑名单状态。此操作需要管理员明确确认后才能执行。',
+      description: '设置或解除已有成员的黑名单状态。player_id 必须来自用户输入的真实玩家ID或 search_member 的唯一命中结果；只有名字/QQ时必须先搜索，禁止把名字或QQ当作 player_id。此操作需要管理员明确确认后才能执行。',
       parameters: {
         type: 'object',
         properties: {
@@ -64,7 +64,7 @@ export const TOOL_DEFINITIONS = [
     type: 'function',
     function: {
       name: 'add_external_blacklist',
-      description: '将非成员玩家加入外部黑名单。若之前已通过 search_member 查到该玩家的 player_id，必须将其一并传入。blacklist_date 默认今天，可手动指定。',
+      description: '将查不到成员档案的非成员玩家加入外部黑名单。若 search_member 已唯一命中已有成员，必须改用 set_member_blacklist；若已查到非成员的 player_id，必须一并传入。此操作需要管理员明确确认。blacklist_date 默认今天，可手动指定。',
       parameters: {
         type: 'object',
         properties: {
@@ -193,6 +193,7 @@ export const TOOL_DEFINITIONS = [
 // 需要二次确认的工具
 export const CONFIRM_REQUIRED_TOOLS = new Set([
   'set_member_blacklist',
+  'add_external_blacklist',
   'delete_external_blacklist'
 ])
 
@@ -200,16 +201,35 @@ export const CONFIRM_REQUIRED_TOOLS = new Set([
 // 工具执行
 // ============================================================
 
-export async function executeAmeliaTool(toolName, args) {
-  const sb = getSupabaseClient()
+function todayInChina(now = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(now)
+  const values = Object.fromEntries(parts.map(part => [part.type, part.value]))
+  return `${values.year}-${values.month}-${values.day}`
+}
+
+export async function executeAmeliaTool(toolName, args, options = {}) {
+  const sb = options.supabase || getSupabaseClient()
 
   switch (toolName) {
     case 'search_member':
       return await lookupMember(args.query)
 
     case 'set_member_blacklist': {
-      const today = new Date().toISOString().slice(0, 10)
-      const { error } = await sb
+      const { data: existing, error: lookupError } = await sb
+        .from('horizn_members')
+        .select('player_id, is_blacklisted')
+        .eq('player_id', args.player_id)
+        .maybeSingle()
+      if (lookupError) throw new Error(lookupError.message)
+      if (!existing) throw new Error(`成员 ${args.player_id} 不存在，未执行黑名单操作`)
+
+      const today = todayInChina(options.now)
+      const { data: updated, error } = await sb
         .from('horizn_members')
         .update({
           is_blacklisted: args.blacklisted,
@@ -217,8 +237,11 @@ export async function executeAmeliaTool(toolName, args) {
           blacklist_note: args.blacklisted ? (args.note || null) : null
         })
         .eq('player_id', args.player_id)
+        .select('player_id, is_blacklisted, blacklist_date, blacklist_note')
+        .maybeSingle()
       if (error) throw new Error(error.message)
-      return { success: true, player_id: args.player_id, blacklisted: args.blacklisted }
+      if (!updated) throw new Error(`成员 ${args.player_id} 未被更新`)
+      return { success: true, player_id: updated.player_id, blacklisted: updated.is_blacklisted }
     }
 
     case 'set_hull_number': {
@@ -268,7 +291,7 @@ export async function executeAmeliaTool(toolName, args) {
       return await _queryQQJoins(sb, args.month, args.recent_days)
 
     case 'add_external_blacklist': {
-      const today = new Date().toISOString().slice(0, 10)
+      const today = todayInChina(options.now)
       const { error } = await sb
         .from('horizn_blacklist_else')
         .insert({
@@ -642,8 +665,10 @@ export function buildConfirmMessage(toolName, args) {
       return args.blacklisted
         ? `⚠️ 确认将 ${args.player_id} 加入黑名单${args.note ? `（原因：${args.note}）` : ''}？\n回复「确认」执行，其他内容取消。`
         : `确认解除 ${args.player_id} 的黑名单？\n回复「确认」执行，其他内容取消。`
+    case 'add_external_blacklist':
+      return `⚠️ 确认将非成员 ${args.name}${args.player_id ? `（${args.player_id}）` : ''} 加入外部黑名单${args.note ? `（原因：${args.note}）` : ''}？\n回复「确认」执行，其他内容取消。`
     case 'delete_external_blacklist':
-      return `⚠️ 确认从外部黑名单删除 ${args.player_id}？\n回复「确认」执行，其他内容取消。`
+      return `⚠️ 确认从外部黑名单删除记录 ${args.id}？\n回复「确认」执行，其他内容取消。`
     default:
       return `确认执行 ${getToolLabel(toolName)}？\n回复「确认」执行，其他内容取消。`
   }

@@ -31,8 +31,9 @@ function buildSystemPrompt() {
   const timestamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())} CST`
   return `你是艾米莉亚，HORIZN 地平线联队的AI管理助手，性格温和专业。
 当前时间：${timestamp}
-职责：帮管理员查询成员档案、管理黑名单和舷号。
-风格：简洁，使用中文，回答不超过200字。
+  职责：帮管理员查询成员档案、管理黑名单和舷号。
+  风格：简洁，使用中文；普通回答不超过200字，成员完整档案不受此限制。
+  查询规则：用户提供玩家ID、QQ号、QQ群名片/昵称、当前或历史游戏名时，必须调用 search_member。不要自行声称“没有权限”；只有工具明确返回权限错误时才能这样说明。
 重要：成员的游戏名（player_id / name）必须原样引用，不得删改任何部分。例如「地平线『No.188』孤独与风」应完整输出，禁止缩写为「孤独与风」。
 概念区分：「佩戴舷号」指成员的游戏名中包含舷号字段（如名字里含有 No.XXX 字样），与数据库 hull_number 列无关。查询谁佩戴/未佩戴舷号时，应检查成员游戏名是否含有 No.\d+ 模式。
 关于确认操作：当你调用需要确认的工具时，系统会自动暂停并询问用户。
@@ -288,6 +289,8 @@ export async function processAmeliaMessage({
 
     // 处理工具调用
     let waitForConfirm = false
+    const directSearchReplies = []
+    const onlySearchTools = assistantMsg.tool_calls.every(call => call.function.name === 'search_member')
     for (const toolCall of assistantMsg.tool_calls) {
       const toolName = toolCall.function.name
       let args
@@ -332,6 +335,7 @@ export async function processAmeliaMessage({
           }
           const resultText = formatToolResult(toolName, result)
           session.push({ role: 'tool', tool_call_id: toolCall.id, name: toolName, content: resultText })
+          if (toolName === 'search_member') directSearchReplies.push(resultText)
         } catch (err) {
           console.error(`[Amelia] 工具 ${toolName} 失败:`, err.message)
           session.push({ role: 'tool', tool_call_id: toolCall.id, name: toolName, content: `失败: ${err.message}` })
@@ -341,6 +345,10 @@ export async function processAmeliaMessage({
     }
 
     if (waitForConfirm) return
+    if (onlySearchTools && directSearchReplies.length) {
+      await sendReply(directSearchReplies.join('\n\n'))
+      return
+    }
     // 有工具结果 → 继续循环让 AI 生成最终文字回复
   }
 }

@@ -16,13 +16,13 @@ console.log = (...args) => _origLog(`[${_ts()}]`, ...args)
 console.error = (...args) => _origErr(`[${_ts()}]`, ...args)
 
 import { NapCatClient } from './napcat.js'
-import { initSupabase } from './supabase.js'
+import { initSupabase, resolveSupabaseServiceKey } from './supabase.js'
 import { createMessageHandler } from './handler.js'
 import { startSyncLoop } from './sync.js'
 import { startDailyReport } from './reporter.js'
 
 // 配置检查
-const requiredEnvs = ['NAPCAT_WS_URL', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY']
+const requiredEnvs = ['NAPCAT_WS_URL', 'SUPABASE_URL']
 for (const key of requiredEnvs) {
   if (!process.env[key]) {
     console.error(`[错误] 缺少环境变量: ${key}`)
@@ -56,7 +56,7 @@ console.log()
 async function main() {
   // 1. 初始化 Supabase
   console.log('[启动] 初始化数据库连接...')
-  initSupabase(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY)
+  initSupabase(process.env.SUPABASE_URL, resolveSupabaseServiceKey())
 
   // 2. 创建 NapCat 客户端
   console.log('[启动] 连接 NapCat WebSocket...')
@@ -102,8 +102,7 @@ async function main() {
 
     console.log()
     console.log('[运行中] 等待消息...')
-    console.log('[提示] 发送包含 player_id 的消息即可触发查询')
-    console.log('[提示] player_id 规则: 大写字母+数字混合，6-16位')
+    console.log('[提示] 普通消息可直接查询 player_id；@艾米莉亚还支持 QQ号、群名片和全部游戏名历史')
     console.log()
 
   } catch (err) {

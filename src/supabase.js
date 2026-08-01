@@ -1,16 +1,119 @@
 /**
  * Supabase 成员档案查询 + QQ群同步服务
  */
+import fs from 'node:fs'
+import path from 'node:path'
 import { createClient } from '@supabase/supabase-js'
+import { parse as parseDotenv } from 'dotenv'
 
 let supabase = null
+
+/**
+ * 判断 Supabase API Key 的数据库角色，不输出密钥本身。
+ */
+export function getSupabaseKeyRole(key) {
+  if (!key) return 'missing'
+  if (key.startsWith('sb_secret_')) return 'secret_key'
+  if (key.startsWith('sb_publishable_')) return 'publishable_key'
+
+  const parts = key.split('.')
+  if (parts.length === 3) {
+    try {
+      const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'))
+      return payload.role || 'jwt_without_role'
+    } catch {
+      return 'invalid_jwt'
+    }
+  }
+  return 'unknown'
+}
+
+function isAdminKey(key) {
+  const role = getSupabaseKeyRole(key)
+  return role === 'service_role' || role === 'secret_key'
+}
+
+/**
+ * 解析机器人服务端使用的 Supabase 管理密钥。
+ * 支持直接配置，也支持从另一个未入库的 env 文件安全复用密钥。
+ */
+export function resolveSupabaseServiceKey(env = process.env) {
+  const directCandidates = [
+    env.SUPABASE_SECRET_KEY,
+    env.SUPABASE_SERVICE_ROLE_KEY,
+    env.SUPABASE_SERVICE_KEY
+  ].filter(Boolean)
+
+  const directAdminKey = directCandidates.find(isAdminKey)
+  if (directAdminKey) return directAdminKey
+
+  if (env.SUPABASE_SERVICE_KEY_FILE) {
+    const keyFile = path.resolve(env.SUPABASE_SERVICE_KEY_FILE)
+    let parsed
+    try {
+      parsed = parseDotenv(fs.readFileSync(keyFile, 'utf8'))
+    } catch (err) {
+      throw new Error(`无法读取 SUPABASE_SERVICE_KEY_FILE：${keyFile}（${err.message}）`)
+    }
+
+    const fileCandidates = [
+      parsed.SUPABASE_SECRET_KEY,
+      parsed.SUPABASE_SERVICE_ROLE_KEY,
+      parsed.SUPABASE_SERVICE_KEY
+    ].filter(Boolean)
+    const fileAdminKey = fileCandidates.find(isAdminKey)
+    if (fileAdminKey) return fileAdminKey
+
+    const fileRoles = fileCandidates.map(getSupabaseKeyRole).join(', ') || '未找到密钥'
+    throw new Error(`SUPABASE_SERVICE_KEY_FILE 中没有 service_role/secret key（检测到：${fileRoles}）`)
+  }
+
+  const configuredRoles = directCandidates.map(getSupabaseKeyRole).join(', ') || '未配置'
+  throw new Error(
+    `机器人必须使用 service_role/secret key，当前检测到：${configuredRoles}。` +
+    '请配置 SUPABASE_SERVICE_ROLE_KEY、SUPABASE_SECRET_KEY，或 SUPABASE_SERVICE_KEY_FILE。'
+  )
+}
 
 /**
  * 初始化 Supabase 客户端
  */
 export function initSupabase(url, serviceKey) {
-  supabase = createClient(url, serviceKey)
-  console.log('[Supabase] 客户端已初始化')
+  if (!isAdminKey(serviceKey)) {
+    throw new Error(`拒绝使用 ${getSupabaseKeyRole(serviceKey)} 初始化管理机器人`)
+  }
+
+  supabase = createClient(url, serviceKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false
+    }
+  })
+  console.log(`[Supabase] 客户端已初始化（${getSupabaseKeyRole(serviceKey)}）`)
+}
+
+function nameVariantPriority(a, b) {
+  const aCurrent = a.group_index === 0 ? 1 : 0
+  const bCurrent = b.group_index === 0 ? 1 : 0
+  if (aCurrent !== bCurrent) return bCurrent - aCurrent
+
+  const aHttp = a.source === 'http' ? 1 : 0
+  const bHttp = b.source === 'http' ? 1 : 0
+  if (aHttp !== bHttp) return bHttp - aHttp
+
+  const aSeen = a.last_seen ? new Date(a.last_seen).getTime() : 0
+  const bSeen = b.last_seen ? new Date(b.last_seen).getTime() : 0
+  if (aSeen !== bSeen) return bSeen - aSeen
+
+  return Number(Boolean(b.is_primary)) - Number(Boolean(a.is_primary))
+}
+
+/**
+ * HTTP 可信名字优先，其次按当前组和最近出现时间选择展示名。
+ */
+export function sortNameVariants(nameVariants = []) {
+  return [...nameVariants].sort(nameVariantPriority)
 }
 
 /**
@@ -156,7 +259,7 @@ export async function getPlayerFullInfo(playerId) {
   if (members && members.length > 0) {
     const member = members[0]
 
-    // 并行查询入离队历史 + QQ账号 + 主名字 + 当前舷号
+    // 并行查询入离队历史 + QQ账号 + 全部名字历史 + 当前舷号
     const [eventsResult, qqResult, nameResult, hullResult] = await Promise.all([
       supabase
         .from('horizn_membership_events')
@@ -165,18 +268,15 @@ export async function getPlayerFullInfo(playerId) {
         .order('event_time', { ascending: true }),
       supabase
         .from('horizn_qq_accounts')
-        .select('qq_id, nickname, card, join_time, left_at')
+        .select('qq_id, nickname, card, role, join_time, left_at')
         .eq('member_id', member.id)
         .eq('is_ignored', false)
         .order('join_time', { ascending: true }),
       supabase
         .from('horizn_name_variants')
-        .select('name')
+        .select('name, is_primary, group_index, last_seen, source')
         .eq('member_id', member.id)
-        .order('is_primary', { ascending: false })
-        .order('group_index', { ascending: true })
-        .order('last_seen', { ascending: false })
-        .limit(1),
+        .order('last_seen', { ascending: false }),
       supabase
         .from('horizn_hull_assignments')
         .select('hull_number, assigned_at, notes')
@@ -185,15 +285,23 @@ export async function getPlayerFullInfo(playerId) {
         .limit(1)
     ])
 
-    if (eventsResult.error) console.error('[Supabase] 事件查询失败:', eventsResult.error)
-    if (qqResult.error) console.error('[Supabase] QQ账号查询失败:', qqResult.error)
-    if (nameResult.error) console.error('[Supabase] 名字查询失败:', nameResult.error)
-    if (hullResult.error) console.error('[Supabase] 舷号查询失败:', hullResult.error)
+    const detailErrors = [
+      ['入离队历史', eventsResult.error],
+      ['QQ账号', qqResult.error],
+      ['名字历史', nameResult.error],
+      ['舷号', hullResult.error]
+    ].filter(([, error]) => error)
+    if (detailErrors.length) {
+      throw new Error(detailErrors.map(([label, error]) => `${label}：${error.message}`).join('；'))
+    }
+
+    const nameVariants = sortNameVariants(nameResult.data || [])
 
     return {
       found: 'member',
       member,
-      primaryName: nameResult.data?.[0]?.name || null,
+      primaryName: nameVariants[0]?.name || null,
+      nameVariants,
       hullAssignment: hullResult.data?.[0] || null,
       events: eventsResult.data || [],
       qqAccounts: qqResult.data || []
@@ -207,7 +315,7 @@ export async function getPlayerFullInfo(playerId) {
     .eq('player_id', playerId)
     .limit(1)
 
-  if (blacklistError) console.error('[Supabase] 外部黑名单查询失败:', blacklistError)
+  if (blacklistError) throw new Error(`外部黑名单查询失败: ${blacklistError.message}`)
 
   if (blacklist && blacklist.length > 0) {
     return {

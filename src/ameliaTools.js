@@ -4,6 +4,7 @@
  */
 import { getSupabaseClient } from './supabase.js'
 import { generateHullSeatmapImage } from './hullSeatmap.js'
+import { formatMemberLookup, lookupMember } from './memberLookup.js'
 
 // ============================================================
 // 工具定义（OpenAI function calling 格式）
@@ -14,13 +15,13 @@ export const TOOL_DEFINITIONS = [
     type: 'function',
     function: {
       name: 'search_member',
-      description: '查询成员档案。支持 player_id 精确查询（如 ABC123），或游戏名模糊搜索。',
+      description: '查询成员完整档案。支持玩家ID、QQ号、QQ群名片/昵称，以及当前或任意历史游戏名；唯一匹配时返回与直接输入ID完全相同的完整信息。',
       parameters: {
         type: 'object',
         properties: {
           query: {
             type: 'string',
-            description: 'player_id（大写字母+数字混合，6-16位）或游戏名关键词'
+            description: '玩家ID、QQ号、QQ群名片/昵称、当前游戏名或任意历史游戏名关键词'
           }
         },
         required: ['query']
@@ -204,7 +205,7 @@ export async function executeAmeliaTool(toolName, args) {
 
   switch (toolName) {
     case 'search_member':
-      return await _searchMember(sb, args.query)
+      return await lookupMember(args.query)
 
     case 'set_member_blacklist': {
       const today = new Date().toISOString().slice(0, 10)
@@ -521,90 +522,6 @@ async function _getHullStats(sb) {
   }
 }
 
-async function _searchMember(sb, query) {
-  const isPlayerId = /^[A-Z0-9]{6,16}$/.test(query) && /[A-Z]/.test(query) && /[0-9]/.test(query)
-
-  if (isPlayerId) {
-    const { data: members, error } = await sb
-      .from('horizn_members')
-      .select('id, player_id, member_number, active, is_blacklisted, blacklist_date, blacklist_note')
-      .eq('player_id', query)
-      .limit(1)
-    if (error) throw new Error(error.message)
-
-    if (!members?.length) {
-      const { data: bl } = await sb
-        .from('horizn_blacklist_else')
-        .select('id, name, player_id, qq_number, note, blacklist_date')
-        .eq('player_id', query)
-        .limit(1)
-      if (bl?.length) return { type: 'external_blacklist', ...bl[0] }
-      return { type: 'not_found', query }
-    }
-
-    const member = members[0]
-    const [nameRes, eventsRes, hullRes] = await Promise.all([
-      sb.from('horizn_name_variants')
-        .select('name')
-        .eq('member_id', member.id)
-        .order('is_primary', { ascending: false })
-        .limit(1),
-      sb.from('horizn_membership_events')
-        .select('event_type, event_time, is_kicked')
-        .eq('player_id', query)
-        .order('event_time', { ascending: false })
-        .limit(5),
-      sb.from('horizn_hull_assignments')
-        .select('hull_number, assigned_at')
-        .eq('player_id', query)
-        .is('revoked_at', null)
-        .limit(1)
-    ])
-    return {
-      type: 'member',
-      ...member,
-      hull_number: hullRes.data?.[0]?.hull_number || null,
-      hull_date: hullRes.data?.[0]?.assigned_at ? String(hullRes.data[0].assigned_at).slice(0, 10) : null,
-      primary_name: nameRes.data?.[0]?.name || null,
-      recent_events: eventsRes.data || []
-    }
-  } else {
-    // 按游戏名模糊搜索：同时查成员名称变体 + 外部黑名单
-    const [namesRes, extBlRes] = await Promise.all([
-      sb.from('horizn_name_variants')
-        .select('name, member_id')
-        .ilike('name', `%${query}%`)
-        .limit(5),
-      sb.from('horizn_blacklist_else')
-        .select('id, name, player_id, qq_number, note, blacklist_date')
-        .ilike('name', `%${query}%`)
-        .limit(5)
-    ])
-    if (namesRes.error) throw new Error(namesRes.error.message)
-
-    const memberIds = [...new Set((namesRes.data || []).map(n => n.member_id))]
-    const { data: members } = memberIds.length
-      ? await sb.from('horizn_members')
-          .select('id, player_id, member_number, active, is_blacklisted')
-          .in('id', memberIds)
-      : { data: [] }
-
-    const memberResults = (members || []).map(m => ({
-      ...m,
-      matched_name: namesRes.data.find(n => n.member_id === m.id)?.name
-    }))
-    const extResults = extBlRes.data || []
-
-    if (!memberResults.length && !extResults.length) return { type: 'not_found', query }
-    return {
-      type: 'name_search',
-      query,
-      results: memberResults,
-      external_blacklist: extResults
-    }
-  }
-}
-
 // ============================================================
 // 格式化 + 辅助
 // ============================================================
@@ -612,44 +529,7 @@ async function _searchMember(sb, query) {
 export function formatToolResult(toolName, result) {
   switch (toolName) {
     case 'search_member': {
-      if (result.type === 'not_found') return `未找到 ${result.query} 相关记录。`
-      if (result.type === 'external_blacklist') {
-        return [
-          `外部黑名单：${result.name}（${result.player_id}）`,
-          `拉黑日期：${result.blacklist_date}`,
-          result.note ? `原因：${result.note}` : null,
-          result.qq_number ? `QQ：${result.qq_number}` : null
-        ].filter(Boolean).join('\n')
-      }
-      if (result.type === 'member') {
-        const fmtDate = s => s ? s.slice(0, 10) : '未知'
-        return [
-          `${result.primary_name || result.player_id}（${result.player_id}）`,
-          `状态：${result.active ? '现役' : '已离队'}${result.is_blacklisted ? ' | ⚠️黑名单' : ''}`,
-          `编号：${result.member_number || '无'}  舷号：${result.hull_number || '无'}`,
-          result.recent_events?.length
-            ? `最近事件：${result.recent_events[0].event_type === 'join' ? '入队' : '离队'} ${fmtDate(result.recent_events[0].event_time)}`
-            : '暂无事件记录'
-        ].join('\n')
-      }
-      if (result.type === 'name_search') {
-        const lines = []
-        if (result.results?.length) {
-          lines.push(`成员（${result.results.length}）：`)
-          for (const m of result.results) {
-            lines.push(`  ${m.matched_name || m.player_id}（${m.player_id}）${m.active ? '' : ' [离队]'}${m.is_blacklisted ? ' ⚠️' : ''}`)
-          }
-        }
-        if (result.external_blacklist?.length) {
-          lines.push(`外部黑名单（${result.external_blacklist.length}）：`)
-          for (const b of result.external_blacklist) {
-            lines.push(`  ${b.name}${b.player_id ? `（${b.player_id}）` : ''} [id:${b.id}]${b.note ? ` 原因:${b.note}` : ''}`)
-          }
-        }
-        if (!lines.length) return `未找到名称含"${result.query}"的相关记录。`
-        return lines.join('\n')
-      }
-      return JSON.stringify(result)
+      return formatMemberLookup(result)
     }
     case 'get_hull_stats': {
       const r = result

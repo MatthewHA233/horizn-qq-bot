@@ -2,7 +2,7 @@
  * 艾米莉亚 AI 工具集
  * 工具定义（function calling）+ 执行逻辑 + 格式化输出
  */
-import { getSupabaseClient } from './supabase.js'
+import { getSupabaseClient, sortNameVariants } from './supabase.js'
 import { generateHullSeatmapImage } from './hullSeatmap.js'
 import { formatMemberLookup, lookupMember } from './memberLookup.js'
 
@@ -26,6 +26,14 @@ export const TOOL_DEFINITIONS = [
         },
         required: ['query']
       }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_hull_roster',
+      description: '返回“舷号成员名单”：当前拥有舷号且在队（现役）的成员，每行一个当前游戏名，按舷号升序，纯名字、不含舷号/编号/统计/任何多余文字。默认只含在队成员，不含历史上曾有舷号但已离队的人。用户说“名单”“舷号名单”“舷号成员名单”“给我名单”等时调用。',
+      parameters: { type: 'object', properties: {} }
     }
   },
   {
@@ -58,6 +66,31 @@ export const TOOL_DEFINITIONS = [
         },
         required: ['player_id', 'hull_number']
       }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'set_member_guarantee',
+      description: '标记或取消已有成员的“担保进队”状态。player_id 必须来自用户输入的真实玩家ID或 search_member 的唯一命中结果；guarantor_name 可以填写担保人的称呼，也可以留空表示只标记该成员是担保进队。此操作需要管理员明确确认后才能执行。',
+      parameters: {
+        type: 'object',
+        properties: {
+          player_id: { type: 'string', description: '被担保成员的 player_id' },
+          guaranteed: { type: 'boolean', description: 'true=标记为担保进队，false=取消担保进队标记' },
+          guarantor_name: { type: 'string', description: '担保人的称呼（可选；不知道或不需要记录时留空）' },
+          note: { type: 'string', description: '担保备注（可选）' }
+        },
+        required: ['player_id', 'guaranteed']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'query_guaranteed_members',
+      description: '查询所有被标记为担保进队的成员，完整返回当前游戏名、玩家ID、QQ、担保人、设定日期、备注和在队状态。用户问“有哪些人被担保”“所有担保进队成员”等问题时调用。',
+      parameters: { type: 'object', properties: {} }
     }
   },
   {
@@ -193,6 +226,7 @@ export const TOOL_DEFINITIONS = [
 // 需要二次确认的工具
 export const CONFIRM_REQUIRED_TOOLS = new Set([
   'set_member_blacklist',
+  'set_member_guarantee',
   'add_external_blacklist',
   'delete_external_blacklist'
 ])
@@ -212,6 +246,40 @@ function todayInChina(now = new Date()) {
   return `${values.year}-${values.month}-${values.day}`
 }
 
+function normalizeOptionalText(value) {
+  const normalized = String(value ?? '').trim()
+  return normalized || null
+}
+
+/**
+ * 管理操作统一从数据库解析成员和当前可信游戏名，避免 AI 根据输入自行猜名字。
+ */
+export async function resolveMemberOperationTarget(playerId, options = {}) {
+  const sb = options.supabase || getSupabaseClient()
+  const normalizedId = String(playerId ?? '').trim()
+  if (!normalizedId) throw new Error('缺少成员 player_id')
+
+  const { data: member, error: memberError } = await sb
+    .from('horizn_members')
+    .select('id, player_id')
+    .eq('player_id', normalizedId)
+    .maybeSingle()
+  if (memberError) throw new Error(memberError.message)
+  if (!member) throw new Error(`成员 ${normalizedId} 不存在`)
+
+  const { data: variants, error: nameError } = await sb
+    .from('horizn_name_variants')
+    .select('name, is_primary, group_index, last_seen, source')
+    .eq('member_id', member.id)
+  if (nameError) throw new Error(nameError.message)
+
+  return {
+    id: member.id,
+    player_id: member.player_id,
+    current_name: sortNameVariants(variants || [])[0]?.name || null
+  }
+}
+
 export async function executeAmeliaTool(toolName, args, options = {}) {
   const sb = options.supabase || getSupabaseClient()
 
@@ -219,14 +287,15 @@ export async function executeAmeliaTool(toolName, args, options = {}) {
     case 'search_member':
       return await lookupMember(args.query)
 
+    case 'get_hull_roster': {
+      // 舷号成员名单：当前拥有舷号且在队 → 当前游戏名，按舷号升序；逐字直发，其它什么都不加
+      const rows = (await _getHullRows(sb)).filter(r => r.active)
+      const names = rows.map(r => r.current_name)
+      return { _directText: names.join('\n'), count: names.length }
+    }
+
     case 'set_member_blacklist': {
-      const { data: existing, error: lookupError } = await sb
-        .from('horizn_members')
-        .select('player_id, is_blacklisted')
-        .eq('player_id', args.player_id)
-        .maybeSingle()
-      if (lookupError) throw new Error(lookupError.message)
-      if (!existing) throw new Error(`成员 ${args.player_id} 不存在，未执行黑名单操作`)
+      const target = await resolveMemberOperationTarget(args.player_id, { supabase: sb })
 
       const today = todayInChina(options.now)
       const { data: updated, error } = await sb
@@ -241,10 +310,16 @@ export async function executeAmeliaTool(toolName, args, options = {}) {
         .maybeSingle()
       if (error) throw new Error(error.message)
       if (!updated) throw new Error(`成员 ${args.player_id} 未被更新`)
-      return { success: true, player_id: updated.player_id, blacklisted: updated.is_blacklisted }
+      return {
+        success: true,
+        player_id: updated.player_id,
+        current_name: target.current_name,
+        blacklisted: updated.is_blacklisted
+      }
     }
 
     case 'set_hull_number': {
+      const target = await resolveMemberOperationTarget(args.player_id, { supabase: sb })
       const digits = String(args.hull_number).replace(/\D/g, '')
       const formatted = 'No.' + digits.padStart(3, '0')
       const { data, error } = await sb.rpc('horizn_assign_hull', {
@@ -254,8 +329,63 @@ export async function executeAmeliaTool(toolName, args, options = {}) {
       })
       if (error) throw new Error(error.message)
       if (data && !data.success) throw new Error(data.error || '分配失败')
-      return { success: true, player_id: args.player_id, hull_number: formatted }
+      return {
+        success: true,
+        player_id: target.player_id,
+        current_name: target.current_name,
+        hull_number: formatted
+      }
     }
+
+    case 'set_member_guarantee': {
+      if (typeof args.guaranteed !== 'boolean') {
+        throw new Error('guaranteed 必须是 true 或 false')
+      }
+
+      const target = await resolveMemberOperationTarget(args.player_id, { supabase: sb })
+
+      if (!args.guaranteed) {
+        const { error } = await sb
+          .from('horizn_member_guarantees')
+          .delete()
+          .eq('member_id', target.id)
+        if (error) throw new Error(error.message)
+        return {
+          success: true,
+          player_id: target.player_id,
+          current_name: target.current_name,
+          guaranteed: false
+        }
+      }
+
+      const payload = {
+        member_id: target.id,
+        guarantor_name: normalizeOptionalText(args.guarantor_name),
+        // 担保日期只能是实际确认写入当天，不接受 AI 或用户指定历史日期。
+        guaranteed_at: todayInChina(options.now),
+        note: normalizeOptionalText(args.note)
+      }
+      const { data: guarantee, error } = await sb
+        .from('horizn_member_guarantees')
+        .upsert(payload, { onConflict: 'member_id' })
+        .select('member_id, guarantor_name, guaranteed_at, note')
+        .maybeSingle()
+      if (error) throw new Error(error.message)
+      if (!guarantee) throw new Error(`成员 ${args.player_id} 的担保标注未被保存`)
+
+      return {
+        success: true,
+        player_id: target.player_id,
+        current_name: target.current_name,
+        guaranteed: true,
+        guarantor_name: guarantee.guarantor_name,
+        guaranteed_at: guarantee.guaranteed_at,
+        note: guarantee.note
+      }
+    }
+
+    case 'query_guaranteed_members':
+      return await _queryGuaranteedMembers(sb)
 
     case 'get_hull_stats':
       return await _getHullStats(sb)
@@ -266,8 +396,15 @@ export async function executeAmeliaTool(toolName, args, options = {}) {
     }
 
     case 'get_hull_list': {
-      const imgPath = await generateHullSeatmapImage('list')
-      return { _imageFile: imgPath, view: 'list' }
+      try {
+        const imgPath = await generateHullSeatmapImage('list')
+        return { _imageFile: imgPath, view: 'list' }
+      } catch (err) {
+        // 外部出图服务不可用（认证/网络异常）→ 回退纯文本舷号列表，保证可用
+        console.error('[Amelia] 舷号列表出图失败，回退文本:', err.message)
+        const rows = await _getHullRows(sb)
+        return { _directText: _formatHullListText(rows) }
+      }
     }
 
     case 'get_blacklist_image': {
@@ -319,39 +456,168 @@ export async function executeAmeliaTool(toolName, args, options = {}) {
   }
 }
 
-async function _checkHullWearStatus(sb) {
-  // 1. 拉取所有在役舷号分配（包含 member_active 和 primary_name 反规范化字段）
-  const { data: assignments, error } = await sb
-    .from('horizn_hull_assignments')
-    .select('hull_number, player_id, member_id, primary_name, member_active')
-    .is('revoked_at', null)
-    .eq('member_active', true)
-    .order('hull_number', { ascending: true })
+async function _queryGuaranteedMembers(sb) {
+  const { data: guarantees, error } = await sb
+    .from('horizn_member_guarantees')
+    .select('member_id, guarantor_name, guaranteed_at, note, created_at')
+    .order('guaranteed_at', { ascending: true })
+    .order('created_at', { ascending: true })
   if (error) throw new Error(error.message)
-  if (!assignments?.length) return { total: 0, list: [] }
+  if (!guarantees?.length) return { count: 0, members: [] }
 
-  // 2. 批量拉取当前名称（覆盖反规范化字段，取最新值）
-  const ids = [...new Set(assignments.map(a => a.member_id).filter(Boolean))]
-  const nameMap = {}
-  if (ids.length) {
-    const { data: names } = await sb
-      .from('horizn_name_variants')
-      .select('member_id, name')
-      .in('member_id', ids)
-      .eq('group_index', 0)
-      .order('is_primary', { ascending: false })
-      .order('last_seen', { ascending: false })
-    for (const n of (names || [])) {
-      if (!nameMap[n.member_id]) nameMap[n.member_id] = n.name
-    }
+  const memberIds = [...new Set(guarantees.map(item => item.member_id))]
+  const [membersResult, namesResult, qqResult] = await Promise.all([
+    sb.from('horizn_members')
+      .select('id, player_id, member_number, active, is_blacklisted')
+      .in('id', memberIds),
+    sb.from('horizn_name_variants')
+      .select('member_id, name, is_primary, group_index, last_seen, source')
+      .in('member_id', memberIds),
+    sb.from('horizn_qq_accounts')
+      .select('member_id, qq_id, card, nickname, join_time')
+      .in('member_id', memberIds)
+      .eq('is_ignored', false)
+      .is('left_at', null)
+      .order('join_time', { ascending: false })
+  ])
+
+  const detailErrors = [
+    ['成员', membersResult.error],
+    ['游戏名', namesResult.error],
+    ['QQ账号', qqResult.error]
+  ].filter(([, detailError]) => detailError)
+  if (detailErrors.length) {
+    throw new Error(detailErrors.map(([label, detailError]) => `${label}：${detailError.message}`).join('；'))
   }
 
-  const list = assignments.map(a => ({
-    hull_number: a.hull_number,
-    current_name: nameMap[a.member_id] || a.primary_name || a.player_id
-  }))
+  const memberMap = new Map((membersResult.data || []).map(member => [member.id, member]))
+  const namesByMember = new Map()
+  for (const variant of (namesResult.data || [])) {
+    if (!namesByMember.has(variant.member_id)) namesByMember.set(variant.member_id, [])
+    namesByMember.get(variant.member_id).push(variant)
+  }
+  const qqByMember = new Map()
+  for (const account of (qqResult.data || [])) {
+    if (!qqByMember.has(account.member_id)) qqByMember.set(account.member_id, account)
+  }
 
-  return { total: list.length, list }
+  const members = guarantees.map(guarantee => {
+    const member = memberMap.get(guarantee.member_id)
+    if (!member) return null
+    const currentName = sortNameVariants(namesByMember.get(guarantee.member_id) || [])[0]?.name || null
+    const qq = qqByMember.get(guarantee.member_id) || null
+    return {
+      player_id: member.player_id,
+      member_number: member.member_number,
+      current_name: currentName,
+      active: member.active,
+      is_blacklisted: member.is_blacklisted,
+      guarantor_name: guarantee.guarantor_name,
+      guaranteed_at: guarantee.guaranteed_at,
+      note: guarantee.note,
+      qq_id: qq?.qq_id ? String(qq.qq_id) : null,
+      qq_name: qq?.card || qq?.nickname || null
+    }
+  }).filter(Boolean)
+
+  return { count: members.length, members }
+}
+
+// 舷号数字（"No.042" → 42），用于排序
+function _hullNum(hull) {
+  const n = parseInt(String(hull || '').replace(/\D/g, ''), 10)
+  return Number.isFinite(n) ? n : Number.MAX_SAFE_INTEGER
+}
+
+/**
+ * 按 member_id 批量拉取全部名字变体，并分页突破 PostgREST 默认 1000 行上限。
+ * 必须拿全量再交给 sortNameVariants，否则历史名多的成员会因截断丢失当前可信名。
+ * 返回 Map<member_id, variants[]>。
+ */
+async function _fetchNameVariantsByMembers(sb, memberIds) {
+  const cols = 'member_id, name, is_primary, group_index, last_seen, source'
+  const PAGE = 1000
+  const byMember = new Map()
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await sb
+      .from('horizn_name_variants')
+      .select(cols)
+      .in('member_id', memberIds)
+      .order('member_id', { ascending: true })
+      .order('last_seen', { ascending: false, nullsFirst: false })
+      .range(from, from + PAGE - 1)
+    if (error) throw new Error(error.message)
+    if (!data || data.length === 0) break
+    for (const v of data) {
+      if (!byMember.has(v.member_id)) byMember.set(v.member_id, [])
+      byMember.get(v.member_id).push(v)
+    }
+    if (data.length < PAGE) break
+  }
+  return byMember
+}
+
+/**
+ * 拉取全部未撤销的舷号分配，联表补齐 当前可信游戏名 / 在队状态 / 黑名单 / QQ。
+ * horizn_hull_assignments 无反规范化字段，必须 JOIN horizn_members / horizn_name_variants / horizn_qq_accounts。
+ */
+async function _getHullRows(sb) {
+  const { data: assignments, error } = await sb
+    .from('horizn_hull_assignments')
+    .select('hull_number, player_id, member_id, assigned_at, notes')
+    .is('revoked_at', null)
+  if (error) throw new Error(error.message)
+  if (!assignments?.length) return []
+
+  const memberIds = [...new Set(assignments.map(a => a.member_id).filter(Boolean))]
+  const [membersRes, namesByMember, qqRes] = await Promise.all([
+    sb.from('horizn_members').select('id, player_id, active, is_blacklisted').in('id', memberIds),
+    _fetchNameVariantsByMembers(sb, memberIds),
+    sb.from('horizn_qq_accounts').select('member_id, qq_id, join_time').in('member_id', memberIds).eq('is_ignored', false).is('left_at', null)
+  ])
+  const detailErr = [membersRes.error, qqRes.error].find(Boolean)
+  if (detailErr) throw new Error(detailErr.message)
+
+  const memberMap = new Map((membersRes.data || []).map(m => [m.id, m]))
+  const qqByMember = new Map()
+  for (const q of (qqRes.data || [])) {
+    if (!qqByMember.has(q.member_id)) qqByMember.set(q.member_id, q)
+  }
+
+  return assignments.map(a => {
+    const m = memberMap.get(a.member_id)
+    const qq = qqByMember.get(a.member_id) || null
+    return {
+      hull_number: a.hull_number,
+      player_id: a.player_id,
+      current_name: sortNameVariants(namesByMember.get(a.member_id) || [])[0]?.name || a.player_id,
+      hull_date: a.assigned_at ? String(a.assigned_at).slice(0, 10) : null,
+      active: m?.active ?? false,
+      is_blacklisted: m?.is_blacklisted ?? false,
+      qq_id: qq?.qq_id ? String(qq.qq_id) : null,
+      qq_join_time: qq?.join_time ? String(qq.join_time).slice(0, 10) : null
+    }
+  }).sort((a, b) => _hullNum(a.hull_number) - _hullNum(b.hull_number))
+}
+
+/** 纯文本舷号列表（出图服务不可用时的回退） */
+function _formatHullListText(rows) {
+  const active = rows.filter(r => r.active)
+  if (!active.length) return '当前没有在队的舷号成员。'
+  const lines = [`在队舷号成员（共 ${active.length} 人）：`]
+  for (const r of active) {
+    lines.push(`${r.hull_number}  ${r.current_name}${r.is_blacklisted ? ' ⚠️黑名单' : ''}`)
+  }
+  return lines.join('\n')
+}
+
+async function _checkHullWearStatus(sb) {
+  const rows = (await _getHullRows(sb)).filter(r => r.active)
+  if (!rows.length) return { total: 0, list: [] }
+  return {
+    total: rows.length,
+    list: rows.map(r => ({ hull_number: r.hull_number, current_name: r.current_name }))
+  }
 }
 
 async function _queryHullOwner(sb, hullNumber) {
@@ -366,7 +632,7 @@ async function _queryHullOwner(sb, hullNumber) {
 
   const { data, error } = await sb
     .from('horizn_hull_assignments')
-    .select('player_id, member_id, hull_number, assigned_at, notes, member_active, primary_name, qq_id, qq_join_time')
+    .select('player_id, member_id, hull_number, assigned_at, notes')
     .eq('hull_number', normalized)
     .is('revoked_at', null)
     .limit(1)
@@ -374,23 +640,25 @@ async function _queryHullOwner(sb, hullNumber) {
   if (!data?.length) return { found: false, hull_number: normalized }
 
   const a = data[0]
-  // 查是否黑名单
-  const { data: memberData } = await sb
-    .from('horizn_members')
-    .select('is_blacklisted')
-    .eq('player_id', a.player_id)
-    .limit(1)
+  const [memberRes, namesRes, qqRes] = await Promise.all([
+    sb.from('horizn_members').select('active, is_blacklisted').eq('id', a.member_id).maybeSingle(),
+    sb.from('horizn_name_variants').select('name, is_primary, group_index, last_seen, source').eq('member_id', a.member_id),
+    sb.from('horizn_qq_accounts').select('qq_id, join_time').eq('member_id', a.member_id).eq('is_ignored', false).is('left_at', null).order('join_time', { ascending: false }).limit(1)
+  ])
+
+  const current = sortNameVariants(namesRes.data || [])[0]?.name || null
+  const qq = qqRes.data?.[0] || null
 
   return {
     found: true,
     hull_number: normalized,
     player_id: a.player_id,
-    primary_name: a.primary_name || null,
+    primary_name: current,
     hull_date: a.assigned_at ? String(a.assigned_at).slice(0, 10) : null,
-    active: a.member_active,
-    is_blacklisted: memberData?.[0]?.is_blacklisted || false,
-    qq_id: a.qq_id || null,
-    qq_join_time: a.qq_join_time ? String(a.qq_join_time).slice(0, 10) : null
+    active: memberRes.data?.active ?? null,
+    is_blacklisted: memberRes.data?.is_blacklisted || false,
+    qq_id: qq?.qq_id ? String(qq.qq_id) : null,
+    qq_join_time: qq?.join_time ? String(qq.join_time).slice(0, 10) : null
   }
 }
 
@@ -416,27 +684,47 @@ async function _queryHullAssignments(sb, month, recentDays) {
 
   const { data, error } = await sb
     .from('horizn_hull_assignments')
-    .select('player_id, member_id, hull_number, assigned_at, member_active, primary_name, qq_id, qq_join_time')
+    .select('player_id, member_id, hull_number, assigned_at')
     .gte('assigned_at', dateFrom)
     .lte('assigned_at', dateTo + 'T23:59:59Z')
     .order('assigned_at', { ascending: true })
 
   if (error) throw new Error(error.message)
+  if (!data?.length) return { label, dateFrom, dateTo, count: 0, members: [] }
+
+  // 联表补齐 当前游戏名 / 在队状态 / QQ（horizn_hull_assignments 无这些反规范化字段）
+  const memberIds = [...new Set(data.map(a => a.member_id).filter(Boolean))]
+  const [membersRes, namesByMember, qqRes] = await Promise.all([
+    sb.from('horizn_members').select('id, active').in('id', memberIds),
+    _fetchNameVariantsByMembers(sb, memberIds),
+    sb.from('horizn_qq_accounts').select('member_id, qq_id, join_time').in('member_id', memberIds).eq('is_ignored', false).is('left_at', null)
+  ])
+  const detailErr = [membersRes.error, qqRes.error].find(Boolean)
+  if (detailErr) throw new Error(detailErr.message)
+
+  const activeMap = new Map((membersRes.data || []).map(m => [m.id, m.active]))
+  const qqByMember = new Map()
+  for (const q of (qqRes.data || [])) {
+    if (!qqByMember.has(q.member_id)) qqByMember.set(q.member_id, q)
+  }
 
   return {
     label,
     dateFrom,
     dateTo,
-    count: (data || []).length,
-    members: (data || []).map(a => ({
-      player_id: a.player_id,
-      primary_name: a.primary_name || null,
-      hull_number: a.hull_number,
-      hull_date: a.assigned_at ? String(a.assigned_at).slice(0, 10) : null,
-      active: a.member_active,
-      qq_id: a.qq_id || null,
-      qq_join_time: a.qq_join_time ? String(a.qq_join_time).slice(0, 10) : null
-    }))
+    count: data.length,
+    members: data.map(a => {
+      const qq = qqByMember.get(a.member_id) || null
+      return {
+        player_id: a.player_id,
+        primary_name: sortNameVariants(namesByMember.get(a.member_id) || [])[0]?.name || null,
+        hull_number: a.hull_number,
+        hull_date: a.assigned_at ? String(a.assigned_at).slice(0, 10) : null,
+        active: activeMap.get(a.member_id) ?? null,
+        qq_id: qq?.qq_id ? String(qq.qq_id) : null,
+        qq_join_time: qq?.join_time ? String(qq.join_time).slice(0, 10) : null
+      }
+    })
   }
 }
 
@@ -573,10 +861,14 @@ export function formatToolResult(toolName, result) {
       return lines.join('\n')
     }
 
+    case 'get_hull_roster':
+      return result._directText ?? ''
+
     case 'get_hull_seatmap':
       return '已生成舷号座位图（网格视图），图片已发送到群聊。'
     case 'get_hull_list':
-      return '已生成舷号列表图片，已发送到群聊。'
+      // 出图成功走图片；出图失败已回退纯文本，直发该文本
+      return result._directText ?? '已生成舷号列表图片，已发送到群聊。'
     case 'get_blacklist_image':
       return '已生成黑名单图片（含成员黑名单 + 外部黑名单），已发送到群聊。'
 
@@ -628,10 +920,32 @@ export function formatToolResult(toolName, result) {
 
     case 'set_member_blacklist':
       return result.blacklisted
-        ? `已将 ${result.player_id} 加入黑名单。`
-        : `已解除 ${result.player_id} 的黑名单。`
+        ? `已将 ${formatOperationTarget(result)} 加入黑名单。`
+        : `已解除 ${formatOperationTarget(result)} 的黑名单。`
     case 'set_hull_number':
-      return `已为 ${result.player_id} 设置舷号 No.${result.hull_number}（${result.hull_date}）。`
+      return `已为 ${formatOperationTarget(result)}设置舷号 ${result.hull_number}。`
+    case 'set_member_guarantee':
+      if (!result.guaranteed) return `已取消 ${formatOperationTarget(result)} 的担保进队标记。`
+      return result.guarantor_name
+        ? `已标记 ${formatOperationTarget(result)} 由 ${result.guarantor_name} 担保进队。`
+        : `已标记 ${formatOperationTarget(result)} 为担保进队（未填写担保人）。`
+    case 'query_guaranteed_members': {
+      if (!result.count) return '当前没有被标记为担保进队的成员。'
+      const lines = [`担保进队成员共 ${result.count} 人：`]
+      result.members.forEach((member, index) => {
+        const number = member.member_number ? ` [编号 ${member.member_number}]` : ''
+        const state = [member.active ? '现役' : '已离队']
+        if (member.is_blacklisted) state.push('黑名单')
+        lines.push(`${index + 1}. ${member.current_name || member.player_id}${number}`)
+        lines.push(`   ID：${member.player_id} · ${state.join(' · ')}`)
+        if (member.qq_id) {
+          lines.push(`   QQ：${member.qq_name ? `${member.qq_name}（${member.qq_id}）` : member.qq_id}`)
+        }
+        lines.push(`   担保人：${member.guarantor_name || '未填写'} · 设定日期：${member.guaranteed_at || '未知'}`)
+        if (member.note) lines.push(`   备注：${member.note}`)
+      })
+      return lines.join('\n')
+    }
     case 'add_external_blacklist':
       return `已将 ${result.name}${result.player_id ? `（${result.player_id}）` : ''} 加入外部黑名单。`
     case 'delete_external_blacklist':
@@ -641,11 +955,20 @@ export function formatToolResult(toolName, result) {
   }
 }
 
+function formatOperationTarget(value) {
+  return value.current_name
+    ? `${value.current_name}（${value.player_id}）`
+    : value.player_id
+}
+
 export function getToolLabel(toolName) {
   return {
     search_member: '查询成员档案',
+    get_hull_roster: '获取舷号成员名单',
     set_member_blacklist: '操作成员黑名单',
     set_hull_number: '设置舷号',
+    set_member_guarantee: '设置担保进队标记',
+    query_guaranteed_members: '查询所有担保进队成员',
     add_external_blacklist: '添加外部黑名单',
     delete_external_blacklist: '删除外部黑名单记录',
     check_hull_wear_status: '清点舷号佩戴情况',
@@ -660,13 +983,19 @@ export function getToolLabel(toolName) {
 }
 
 export function buildConfirmMessage(toolName, args) {
+  const target = formatOperationTarget(args)
   switch (toolName) {
     case 'set_member_blacklist':
       return args.blacklisted
-        ? `⚠️ 确认将 ${args.player_id} 加入黑名单${args.note ? `（原因：${args.note}）` : ''}？\n回复「确认」执行，其他内容取消。`
-        : `确认解除 ${args.player_id} 的黑名单？\n回复「确认」执行，其他内容取消。`
+        ? `⚠️ 确认将 ${target} 加入黑名单${args.note ? `（原因：${args.note}）` : ''}？\n回复「确认」执行，其他内容取消。`
+        : `确认解除 ${target} 的黑名单？\n回复「确认」执行，其他内容取消。`
     case 'add_external_blacklist':
       return `⚠️ 确认将非成员 ${args.name}${args.player_id ? `（${args.player_id}）` : ''} 加入外部黑名单${args.note ? `（原因：${args.note}）` : ''}？\n回复「确认」执行，其他内容取消。`
+    case 'set_member_guarantee':
+      if (!args.guaranteed) {
+        return `确认取消 ${target} 的担保进队标记？\n回复「确认」执行，其他内容取消。`
+      }
+      return `确认将 ${target} 标记为担保进队${args.guarantor_name ? `（担保人：${args.guarantor_name}）` : '（未填写担保人）'}${args.note ? `，备注：${args.note}` : ''}？\n回复「确认」执行，其他内容取消。`
     case 'delete_external_blacklist':
       return `⚠️ 确认从外部黑名单删除记录 ${args.id}？\n回复「确认」执行，其他内容取消。`
     default:

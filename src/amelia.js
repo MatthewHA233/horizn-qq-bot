@@ -2,7 +2,7 @@
  * 艾米莉亚 AI 会话管理器
  * - 管理群 @艾米莉亚 触发，单用户持久会话，最多 30 轮
  * - 使用阿里云百炼 DashScope OpenAI 兼容接口
- * - 支持 function calling 工具（查询/黑名单/舷号管理）
+ * - 支持 function calling 工具（查询/黑名单/舷号/担保进队管理）
  * - 需要确认的操作：AI 调用工具 → 向用户发确认气泡 → 用户明确回复“确认”
  *   → 系统执行原始待确认工具及参数，避免 AI 二次生成时丢失或篡改操作
  * - 会话结束后将对话记录保存到本地 logs/amelia/
@@ -16,7 +16,8 @@ import {
   TOOL_DEFINITIONS,
   CONFIRM_REQUIRED_TOOLS,
   getToolLabel,
-  buildConfirmMessage
+  buildConfirmMessage,
+  resolveMemberOperationTarget
 } from './ameliaTools.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -50,7 +51,7 @@ export function classifyConfirmationReply(text) {
  */
 export function shouldContinueAfterSearch(text) {
   const normalized = String(text ?? '').normalize('NFKC')
-  return /(黑名单|拉黑|解黑|移出黑名单|解除黑名单|取消黑名单|设置舷号|分配舷号|授予舷号|修改舷号|更改舷号)/.test(normalized)
+  return /(黑名单|拉黑|解黑|移出黑名单|解除黑名单|取消黑名单|设置舷号|分配舷号|授予舷号|修改舷号|更改舷号|担保进队|担保入队|担保人|取消担保|解除担保)/.test(normalized)
 }
 
 function buildSystemPrompt() {
@@ -59,10 +60,11 @@ function buildSystemPrompt() {
   const timestamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())} CST`
   return `你是艾米莉亚，HORIZN 地平线联队的AI管理助手，性格温和专业。
 当前时间：${timestamp}
-  职责：帮管理员查询成员档案、管理黑名单和舷号。
+  职责：帮管理员查询成员档案、管理黑名单、舷号和担保进队标注。
   风格：简洁，使用中文；普通回答不超过200字，成员完整档案不受此限制。
   查询规则：用户提供玩家ID、QQ号、QQ群名片/昵称、当前或历史游戏名时，必须调用 search_member。不要自行声称“没有权限”；只有工具明确返回权限错误时才能这样说明。
-  复合操作规则：用户要求按名字、QQ号或群名片执行加入/解除黑名单、设置舷号等操作时，必须先调用 search_member。唯一命中后使用工具返回的真实 player_id 继续完成原请求，不要停在查询结果，也绝不能把名字或QQ号伪装成 player_id。若有多个候选则请用户明确选择；没有成员记录时，加入黑名单应改用 add_external_blacklist。
+  复合操作规则：用户要求按名字、QQ号或群名片执行加入/解除黑名单、设置舷号、标记/取消担保进队等操作时，必须先调用 search_member。唯一命中后使用工具返回的真实 player_id 继续完成原请求，不要停在查询结果，也绝不能把名字或QQ号伪装成 player_id。若有多个候选则请用户明确选择；没有成员记录时，加入黑名单应改用 add_external_blacklist。担保标注的 guarantor_name 是管理员口中的担保人称呼，可留空；不要把担保人误当成被标注成员。担保日期由系统在管理员确认执行时自动记录为北京时间当天，不得自行指定或倒填。用户询问所有被担保人时调用 query_guaranteed_members，并完整呈现名单。
+  管理操作回复规则：拉黑、赐予舷号和担保标记的确认与完成回复只需在玩家ID旁多显示一个当前游戏名，格式为“游戏名（玩家ID）”；不要重复成员档案或附加无关字段。
 重要：成员的游戏名（player_id / name）必须原样引用，不得删改任何部分。例如「地平线『No.188』孤独与风」应完整输出，禁止缩写为「孤独与风」。
 概念区分：「佩戴舷号」指成员的游戏名中包含舷号字段（如名字里含有 No.XXX 字样），与数据库 hull_number 列无关。查询谁佩戴/未佩戴舷号时，应检查成员游戏名是否含有 No.\d+ 模式。
 关于确认操作：当你调用需要确认的工具时，系统会自动暂停并询问用户；用户明确确认后，系统会执行原始工具和参数，无需你再次调用。`
@@ -342,13 +344,29 @@ export async function processAmeliaMessage({
     // 处理工具调用
     let waitForConfirm = false
     const directSearchReplies = []
+    const directGuaranteeListReplies = []
+    const directHullReplies = []
+    const directTexts = []  // _directText 逐字直发（舷号成员名单 / 舷号列表文本回退），不过 LLM 转述
     const onlySearchTools = assistantMsg.tool_calls.every(call => call.function.name === 'search_member')
+    const onlyGuaranteeListTools = assistantMsg.tool_calls.every(call => call.function.name === 'query_guaranteed_members')
+    const onlyHullTools = assistantMsg.tool_calls.every(call => call.function.name === 'set_hull_number')
     for (const toolCall of assistantMsg.tool_calls) {
       const toolName = toolCall.function.name
       let args
       try { args = JSON.parse(toolCall.function.arguments) } catch { args = {} }
 
       if (CONFIRM_REQUIRED_TOOLS.has(toolName)) {
+        if (args.player_id && ['set_member_blacklist', 'set_member_guarantee'].includes(toolName)) {
+          try {
+            const target = await resolveMemberOperationTarget(args.player_id)
+            args.current_name = target.current_name
+          } catch (err) {
+            const failed = `${getToolLabel(toolName)}失败：${err.message}`
+            session.push({ role: 'tool', tool_call_id: toolCall.id, name: toolName, content: failed })
+            await sendReply(failed)
+            return
+          }
+        }
         // 需要确认：先插一条占位 tool result（保持消息格式合法），再发确认气泡
         const confirmMsg = buildConfirmMessage(toolName, args)
         session.push({
@@ -384,9 +402,13 @@ export async function processAmeliaMessage({
               console.error('[Amelia] 发送图片失败:', imgErr.message)
             }
           }
+          // 逐字直发文本（名单 / 舷号列表文本回退）
+          if (result._directText) directTexts.push(result._directText)
           const resultText = formatToolResult(toolName, result)
           session.push({ role: 'tool', tool_call_id: toolCall.id, name: toolName, content: resultText })
           if (toolName === 'search_member') directSearchReplies.push(resultText)
+          if (toolName === 'query_guaranteed_members') directGuaranteeListReplies.push(resultText)
+          if (toolName === 'set_hull_number') directHullReplies.push(resultText)
         } catch (err) {
           console.error(`[Amelia] 工具 ${toolName} 失败:`, err.message)
           session.push({ role: 'tool', tool_call_id: toolCall.id, name: toolName, content: `失败: ${err.message}` })
@@ -398,6 +420,14 @@ export async function processAmeliaMessage({
     if (waitForConfirm) return
     if (onlySearchTools && directSearchReplies.length && !shouldContinueAfterSearch(text)) {
       await sendReply(directSearchReplies.join('\n\n'))
+      return
+    }
+    if (onlyGuaranteeListTools && directGuaranteeListReplies.length) {
+      await sendReply(directGuaranteeListReplies.join('\n\n'))
+      return
+    }
+    if (onlyHullTools && directHullReplies.length) {
+      await sendReply(directHullReplies.join('\n\n'))
       return
     }
     // 有工具结果 → 继续循环让 AI 生成最终文字回复

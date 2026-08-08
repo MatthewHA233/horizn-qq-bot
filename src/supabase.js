@@ -259,8 +259,8 @@ export async function getPlayerFullInfo(playerId) {
   if (members && members.length > 0) {
     const member = members[0]
 
-    // 并行查询入离队历史 + QQ账号 + 全部名字历史 + 当前舷号
-    const [eventsResult, qqResult, nameResult, hullResult] = await Promise.all([
+    // 并行查询入离队历史 + QQ账号 + 全部名字历史 + 当前舷号 + 担保标注
+    const [eventsResult, qqResult, nameResult, hullResult, guaranteeResult] = await Promise.all([
       supabase
         .from('horizn_membership_events')
         .select('event_type, event_time, is_kicked')
@@ -282,6 +282,11 @@ export async function getPlayerFullInfo(playerId) {
         .select('hull_number, assigned_at, notes')
         .eq('player_id', playerId)
         .is('revoked_at', null)
+        .limit(1),
+      supabase
+        .from('horizn_member_guarantees')
+        .select('guarantor_name, guaranteed_at, note')
+        .eq('member_id', member.id)
         .limit(1)
     ])
 
@@ -289,7 +294,8 @@ export async function getPlayerFullInfo(playerId) {
       ['入离队历史', eventsResult.error],
       ['QQ账号', qqResult.error],
       ['名字历史', nameResult.error],
-      ['舷号', hullResult.error]
+      ['舷号', hullResult.error],
+      ['担保标注', guaranteeResult.error]
     ].filter(([, error]) => error)
     if (detailErrors.length) {
       throw new Error(detailErrors.map(([label, error]) => `${label}：${error.message}`).join('；'))
@@ -303,6 +309,7 @@ export async function getPlayerFullInfo(playerId) {
       primaryName: nameVariants[0]?.name || null,
       nameVariants,
       hullAssignment: hullResult.data?.[0] || null,
+      guarantee: guaranteeResult.data?.[0] || null,
       events: eventsResult.data || [],
       qqAccounts: qqResult.data || []
     }

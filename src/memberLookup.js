@@ -326,7 +326,7 @@ export function formatMemberLookup(result) {
     return lines.join('\n')
   }
 
-  const { member, primaryName, nameVariants, hullAssignment, events, qqAccounts } = result.info
+  const { member, primaryName, nameVariants, hullAssignment, guarantee, events, qqAccounts } = result.info
   const meaningfulMatches = (result.matched || []).filter(match => match.type !== 'player_id')
   if (meaningfulMatches.length) {
     lines.push(`匹配：${meaningfulMatches.map(matchLabel).join('、')} → ${member.player_id}`)
@@ -353,6 +353,13 @@ export function formatMemberLookup(result) {
   const status = [member.active ? '现役' : '已离队']
   if (member.is_second_team) status.push('二队')
   lines.push(`状态：${status.join(' · ')}`)
+
+  if (guarantee) {
+    const guarantor = guarantee.guarantor_name ? `担保人：${guarantee.guarantor_name}` : '担保人未填写'
+    const date = guarantee.guaranteed_at ? ` · ${fmtDate(guarantee.guaranteed_at)}标注` : ''
+    lines.push(`担保进队：是（${guarantor}${date}）`)
+    if (guarantee.note) lines.push(`担保备注：${guarantee.note}`)
+  }
 
   const activeQQ = qqAccounts.filter(account => !account.left_at)
   const leftQQ = qqAccounts.filter(account => account.left_at)

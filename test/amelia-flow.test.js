@@ -13,6 +13,7 @@ import {
   formatToolResult
 } from '../src/ameliaTools.js'
 import { formatMemberLookup } from '../src/memberLookup.js'
+import { stripQQFaces, textToSegments } from '../src/qqFace.js'
 
 test('复合黑名单请求在搜索后继续，不被完整档案提前截断', () => {
   assert.equal(shouldContinueAfterSearch('877D027F103D9541 黑名单，拿奖励退队'), true)
@@ -363,9 +364,62 @@ test('历史游戏名只展示 HTTP 精确名和 OCR 代表名，不展示 OCR �
     }
   })
 
-  const historyLine = output.split('\n').find(line => line.startsWith('历史游戏名：'))
-  assert.equal(historyLine, '历史游戏名：旧HTTP名、PROMISE『ˣⁱᵃⁿᵍˢⁱ、相思两行泪ˣᴺ')
+  const historyLine = output.split('\n').find(line => line.startsWith('📜 历史游戏名：'))
+  assert.equal(historyLine, '📜 历史游戏名：旧HTTP名、PROMISE『ˣⁱᵃⁿᵍˢⁱ、相思两行泪ˣᴺ')
   assert.doesNotMatch(output, /rxiangsiPROMISE|相思两行泪心|未审阅OCR名/)
+})
+
+test('小黄脸 CQ 码拆成 face 消息段，其余保持纯文本', () => {
+  assert.deepEqual(textToSegments('\n[CQ:face,id=314] 查询：A\n    2026.3.1 [CQ:face,id=49] 入队'), [
+    { type: 'text', data: { text: '\n' } },
+    { type: 'face', data: { id: '314' } },
+    { type: 'text', data: { text: ' 查询：A\n    2026.3.1 ' } },
+    { type: 'face', data: { id: '49' } },
+    { type: 'text', data: { text: ' 入队' } }
+  ])
+  assert.deepEqual(textToSegments('无小黄脸 [xiangsiPROMISE'), [
+    { type: 'text', data: { text: '无小黄脸 [xiangsiPROMISE' } }
+  ])
+  assert.equal(stripQQFaces('[CQ:face,id=282] 状态：现役\n    2026.6.20 [CQ:face,id=39] 离队'), '状态：现役\n    2026.6.20 离队')
+})
+
+test('完整成员档案每行带图标，小黄脸按定稿 id 发送', () => {
+  const output = formatMemberLookup({
+    type: 'member',
+    query: '相思两行泪',
+    matched: [{ type: 'current_name', value: '相思两行泪' }],
+    activity: { sessionTime: '2026-10-10 11:50:00', weekly: 3520, season: 98760 },
+    info: {
+      found: 'member',
+      member: {
+        player_id: '2B66696E8FB1FCF1',
+        member_number: 'member_167',
+        active: true,
+        is_second_team: true,
+        is_blacklisted: false
+      },
+      primaryName: '相思两行泪',
+      nameVariants: [],
+      hullAssignment: { hull_number: '167', assigned_at: '2026-03-02' },
+      guarantee: { guarantor_name: '某某', guaranteed_at: '2026-08-04', note: null },
+      events: [
+        { event_type: 'join', event_time: '2026-03-01T00:00:00+08:00', is_kicked: false },
+        { event_type: 'leave', event_time: '2026-06-20T00:00:00+08:00', is_kicked: true }
+      ],
+      qqAccounts: [{ qq_id: 123456789, card: '相思两行泪', join_time: '2026-03-01', left_at: null }]
+    }
+  })
+
+  const lines = output.split('\n')
+  for (const prefix of ['🎯 匹配：', '🎮 游戏名：', '🆔 玩家ID：', '🔢 成员编号：', '⚓ 舷号：', '🗓️ 入离队记录（共 2 次）：']) {
+    assert.ok(lines.some(line => line.startsWith(prefix)), `缺少行首「${prefix}」`)
+  }
+
+  const faceIds = textToSegments(output).filter(seg => seg.type === 'face').map(seg => seg.data.id)
+  assert.deepEqual(faceIds, ['314', '282', '78', '125', '30', '49', '39'])
+  const plain = textToSegments(output).filter(seg => seg.type === 'text').map(seg => seg.data.text).join('')
+  assert.doesNotMatch(plain, /CQ:face/)
+  assert.match(plain, /离队（被踢）/)
 })
 
 function resolvedQuery(data) {

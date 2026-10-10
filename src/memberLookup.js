@@ -7,9 +7,36 @@ import {
   getSupabaseClient,
   sortNameVariants
 } from './supabase.js'
+import { qqFace } from './qqFace.js'
 
 const SEP = '────────────────'
 const SEARCH_LIMIT = 8
+
+// 档案各行行首图标：QQ 内置小黄脸为主（发送层转 face 消息段），emoji 辅助。改图标只改这里。
+const ICON = Object.freeze({
+  query: qqFace(314), // 仔细分析
+  match: '🎯',
+  candidates: '🔎',
+  person: '👤',
+  blacklist: '⛔',
+  gameName: '🎮',
+  playerId: '🆔',
+  history: '📜',
+  memberNo: '🔢',
+  hull: '⚓',
+  status: qqFace(282), // 敬礼
+  guarantee: qqFace(78), // 握手
+  note: '📝',
+  qq: qqFace(125), // 转圈（QQ 企鹅）
+  card: '🏷️',
+  date: '📅',
+  activity: qqFace(30), // 奋斗
+  events: '🗓️',
+  join: qqFace(49), // 拥抱
+  leave: qqFace(39), // 再见
+  none: '❌',
+  info: 'ℹ️'
+})
 
 function normalize(value) {
   return String(value ?? '').normalize('NFKC').trim().toLocaleLowerCase('zh-CN')
@@ -277,68 +304,69 @@ function formatActivityTime(value) {
 }
 
 export function formatMemberLookup(result) {
-  const lines = [`查询：${result.query}`, SEP]
+  const lines = [`${ICON.query} 查询：${result.query}`, SEP]
 
   if (result.type === 'not_found') {
-    lines.push('无记录')
+    lines.push(`${ICON.none} 无记录`)
     return lines.join('\n')
   }
 
   if (result.type === 'unlinked_qq') {
     const q = result.account
-    lines.push('找到QQ群记录，但尚未绑定任何游戏成员ID')
-    lines.push(`QQ：${q.qq_id}`)
-    if (q.card || q.nickname) lines.push(`群名片：${q.card || q.nickname}`)
+    lines.push(`${ICON.info} 找到QQ群记录，但尚未绑定任何游戏成员ID`)
+    lines.push(`${ICON.qq} QQ：${q.qq_id}`)
+    if (q.card || q.nickname) lines.push(`${ICON.card} 群名片：${q.card || q.nickname}`)
     return lines.join('\n')
   }
 
   if (result.type === 'candidates') {
-    lines.push(`找到 ${result.total} 个可能成员，请指定玩家ID继续查询：`)
+    lines.push(`${ICON.candidates} 找到 ${result.total} 个可能成员，请指定玩家ID继续查询：`)
     for (const candidate of result.candidates) {
       const matched = candidate.matches.map(matchLabel).join('、')
-      lines.push(`${candidate.current_name || candidate.player_id}（${candidate.player_id}）${candidate.active ? '' : ' [已离队]'}`)
-      lines.push(`  匹配：${matched}`)
+      lines.push(`${ICON.person} ${candidate.current_name || candidate.player_id}（${candidate.player_id}）${candidate.active ? '' : ' [已离队]'}`)
+      lines.push(`    ${ICON.match} 匹配：${matched}`)
     }
-    if (result.truncated) lines.push(`仅显示前 ${result.candidates.length} 项`)
+    if (result.truncated) lines.push(`${ICON.info} 仅显示前 ${result.candidates.length} 项`)
     return lines.join('\n')
   }
 
   if (result.type === 'external_blacklist_candidates') {
-    lines.push(`外部黑名单中找到 ${result.total} 条，请提供更精确的信息：`)
+    lines.push(`${ICON.blacklist} 外部黑名单中找到 ${result.total} 条，请提供更精确的信息：`)
     for (const record of result.records) {
-      lines.push(`${record.name}${record.player_id ? `（${record.player_id}）` : ''}${record.qq_number ? ` QQ:${record.qq_number}` : ''}`)
+      lines.push(`${ICON.person} ${record.name}${record.player_id ? `（${record.player_id}）` : ''}${record.qq_number ? ` QQ:${record.qq_number}` : ''}`)
     }
     return lines.join('\n')
   }
 
   if (result.type === 'external_blacklist') {
     const bl = result.record
-    lines.push('⚠️ 外部黑名单')
-    lines.push(`称呼：${bl.name}${bl.qq_number ? `  QQ：${bl.qq_number}` : ''}`)
-    if (bl.player_id) lines.push(`玩家ID：${bl.player_id}`)
-    lines.push(`拉黑日期：${fmtDate(bl.blacklist_date)}`)
-    if (bl.note) lines.push(`原因：${bl.note}`)
+    lines.push(`${ICON.blacklist} 外部黑名单`)
+    lines.push(`${ICON.person} 称呼：${bl.name}`)
+    if (bl.qq_number) lines.push(`${ICON.qq} QQ：${bl.qq_number}`)
+    if (bl.player_id) lines.push(`${ICON.playerId} 玩家ID：${bl.player_id}`)
+    lines.push(`${ICON.date} 拉黑日期：${fmtDate(bl.blacklist_date)}`)
+    if (bl.note) lines.push(`${ICON.note} 原因：${bl.note}`)
     return lines.join('\n')
   }
 
   if (result.type !== 'member' || result.info.found !== 'member') {
-    lines.push('无记录')
+    lines.push(`${ICON.none} 无记录`)
     return lines.join('\n')
   }
 
   const { member, primaryName, nameVariants, hullAssignment, guarantee, events, qqAccounts } = result.info
   const meaningfulMatches = (result.matched || []).filter(match => match.type !== 'player_id')
   if (meaningfulMatches.length) {
-    lines.push(`匹配：${meaningfulMatches.map(matchLabel).join('、')} → ${member.player_id}`)
+    lines.push(`${ICON.match} 匹配：${meaningfulMatches.map(matchLabel).join('、')} → ${member.player_id}`)
   }
 
   if (member.is_blacklisted) {
     const note = member.blacklist_note ? `  备注：${member.blacklist_note}` : ''
-    lines.push(`⚠️ 黑名单（${fmtDate(member.blacklist_date)}）${note}`)
+    lines.push(`${ICON.blacklist} 黑名单（${fmtDate(member.blacklist_date)}）${note}`)
   }
 
-  if (primaryName) lines.push(`游戏名：${primaryName}`)
-  lines.push(`玩家ID：${member.player_id}`)
+  if (primaryName) lines.push(`${ICON.gameName} 游戏名：${primaryName}`)
+  lines.push(`${ICON.playerId} 玩家ID：${member.player_id}`)
 
   // 历史名只展示可信名：HTTP 精确名 + 历史 OCR 代表名（representative=true）。
   // representative=false/null 的 OCR 噪声只服务于识别匹配（resolveIdentity），不直接展示。
@@ -347,23 +375,23 @@ export function formatMemberLookup(result) {
       .filter(item => item.source === 'http' || item.representative === true)
       .map(item => item.name)
   )].filter(name => normalize(name) !== normalize(primaryName))
-  if (historicalNames.length) lines.push(`历史游戏名：${historicalNames.join('、')}`)
+  if (historicalNames.length) lines.push(`${ICON.history} 历史游戏名：${historicalNames.join('、')}`)
 
   const hull = hullAssignment
     ? `${hullAssignment.hull_number}（${fmtDate(hullAssignment.assigned_at)}）`
     : '无'
-  const number = member.member_number ? `成员编号：${member.member_number}  ` : ''
-  lines.push(`${number}舷号：${hull}`)
+  if (member.member_number) lines.push(`${ICON.memberNo} 成员编号：${member.member_number}`)
+  lines.push(`${ICON.hull} 舷号：${hull}`)
 
   const status = [member.active ? '现役' : '已离队']
   if (member.is_second_team) status.push('二队')
-  lines.push(`状态：${status.join(' · ')}`)
+  lines.push(`${ICON.status} 状态：${status.join(' · ')}`)
 
   if (guarantee) {
     const guarantor = guarantee.guarantor_name ? `担保人：${guarantee.guarantor_name}` : '担保人未填写'
     const date = guarantee.guaranteed_at ? ` · ${fmtDate(guarantee.guaranteed_at)}标注` : ''
-    lines.push(`担保进队：是（${guarantor}${date}）`)
-    if (guarantee.note) lines.push(`担保备注：${guarantee.note}`)
+    lines.push(`${ICON.guarantee} 担保进队：是（${guarantor}${date}）`)
+    if (guarantee.note) lines.push(`${ICON.note} 担保备注：${guarantee.note}`)
   }
 
   const activeQQ = qqAccounts.filter(account => !account.left_at)
@@ -372,30 +400,30 @@ export function formatMemberLookup(result) {
     for (const account of activeQQ) {
       const name = account.card || account.nickname || String(account.qq_id)
       const joined = account.join_time ? `，${fmtDate(account.join_time)}入群` : ''
-      lines.push(`内群：${name}（${account.qq_id}${joined}）`)
+      lines.push(`${ICON.qq} 内群：${name}（${account.qq_id}${joined}）`)
     }
   } else if (leftQQ.length) {
     const latest = [...leftQQ].sort((a, b) => new Date(b.left_at) - new Date(a.left_at))[0]
     const name = latest.card || latest.nickname || String(latest.qq_id)
-    lines.push(`内群：不在内群（离群 ${fmtDate(latest.left_at)}，曾用 ${name}（${latest.qq_id}））`)
+    lines.push(`${ICON.qq} 内群：不在内群（离群 ${fmtDate(latest.left_at)}，曾用 ${name}（${latest.qq_id}））`)
   } else {
-    lines.push('内群：不在内群')
+    lines.push(`${ICON.qq} 内群：不在内群`)
   }
 
   if (result.activity) {
-    lines.push(`最新活跃度（${formatActivityTime(result.activity.sessionTime)}）：`)
-    lines.push(`  周活跃度 ${result.activity.weekly} | 赛季活跃度 ${result.activity.season}`)
+    lines.push(`${ICON.activity} 最新活跃度（${formatActivityTime(result.activity.sessionTime)}）：`)
+    lines.push(`    周活跃度 ${result.activity.weekly} | 赛季活跃度 ${result.activity.season}`)
   }
 
   if (events.length) {
-    lines.push(`历史（共 ${events.length} 次）：`)
+    lines.push(`${ICON.events} 入离队记录（共 ${events.length} 次）：`)
     for (const event of events) {
-      const eventName = event.event_type === 'join' ? '入队' : '离队'
-      const kicked = event.event_type === 'leave' && event.is_kicked ? '（被踢）' : ''
-      lines.push(`  ${fmtDate(event.event_time)} ${eventName}${kicked}`)
+      const isJoin = event.event_type === 'join'
+      const kicked = !isJoin && event.is_kicked ? '（被踢）' : ''
+      lines.push(`    ${fmtDate(event.event_time)} ${isJoin ? ICON.join : ICON.leave} ${isJoin ? '入队' : '离队'}${kicked}`)
     }
   } else {
-    lines.push('历史：无入离队记录')
+    lines.push(`${ICON.events} 入离队记录：无`)
   }
 
   return lines.join('\n')

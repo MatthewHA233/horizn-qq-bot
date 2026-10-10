@@ -3,6 +3,7 @@
  * 基于 OneBot v11 协议
  */
 import WebSocket from 'ws'
+import { textToSegments } from './qqFace.js'
 
 export class NapCatClient {
   constructor(options = {}) {
@@ -155,7 +156,7 @@ export class NapCatClient {
     // 使用 CQ 码格式回复
     const message = [
       { type: 'reply', data: { id: messageId } },
-      { type: 'text', data: { text } }
+      ...textToSegments(text)
     ]
     return this.sendGroupMessage(groupId, message)
   }
@@ -167,7 +168,7 @@ export class NapCatClient {
     const message = [
       { type: 'reply', data: { id: messageId } },
       { type: 'at', data: { qq: String(userId) } },
-      { type: 'text', data: { text: ' ' + text } }
+      ...textToSegments(' ' + text)
     ]
     return this.sendGroupMessage(groupId, message)
   }
@@ -188,7 +189,7 @@ export class NapCatClient {
   async replyPrivateMessage(userId, messageId, text) {
     const message = [
       { type: 'reply', data: { id: messageId } },
-      { type: 'text', data: { text } }
+      ...textToSegments(text)
     ]
     return this.sendPrivateMessage(userId, message)
   }

@@ -10,6 +10,7 @@
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import { stripQQFaces, textToSegments } from './qqFace.js'
 import {
   executeAmeliaTool,
   formatToolResult,
@@ -216,7 +217,7 @@ export async function processAmeliaMessage({
     try {
       const res = await client.sendGroupMessage(groupId, [
         { type: 'at', data: { qq: String(userId) } },
-        { type: 'text', data: { text: '\n' + content } }
+        ...textToSegments('\n' + content)
       ])
       return res?.message_id || null
     } catch (e) {
@@ -406,7 +407,8 @@ export async function processAmeliaMessage({
           // 逐字直发文本（名单 / 舷号列表文本回退）
           if (result._directText) directTexts.push(result._directText)
           const resultText = formatToolResult(toolName, result)
-          session.push({ role: 'tool', tool_call_id: toolCall.id, name: toolName, content: resultText })
+          // 直发给群的保留小黄脸；LLM 上下文去掉 CQ 码，避免模型复述出原始标记
+          session.push({ role: 'tool', tool_call_id: toolCall.id, name: toolName, content: stripQQFaces(resultText) })
           if (toolName === 'search_member') directSearchReplies.push(resultText)
           if (toolName === 'query_guaranteed_members') directGuaranteeListReplies.push(resultText)
           if (toolName === 'set_hull_number') directHullReplies.push(resultText)

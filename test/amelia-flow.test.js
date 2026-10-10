@@ -331,6 +331,43 @@ test('完整成员档案显示担保标注', () => {
   assert.match(output, /担保进队：是（担保人未填写 · 2026\.8\.4标注）/)
 })
 
+test('历史游戏名只展示 HTTP 精确名和 OCR 代表名，不展示 OCR 噪声', () => {
+  const output = formatMemberLookup({
+    type: 'member',
+    query: '2B66696E8FB1FCF1',
+    matched: [],
+    activity: null,
+    info: {
+      found: 'member',
+      member: {
+        player_id: '2B66696E8FB1FCF1',
+        member_number: 'member_167',
+        active: true,
+        is_second_team: false,
+        is_blacklisted: false
+      },
+      primaryName: '剑指天涯岸',
+      nameVariants: [
+        { name: '剑指天涯岸', source: 'http', representative: null },
+        { name: '旧HTTP名', source: 'http', representative: null },
+        { name: 'PROMISE『ˣⁱᵃⁿᵍˢⁱ', source: null, representative: true },
+        { name: '相思两行泪ˣᴺ', source: null, representative: true },
+        { name: 'rxiangsiPROMISE', source: null, representative: false },
+        { name: '相思两行泪心', source: 'ocr', representative: false },
+        { name: '未审阅OCR名', source: null, representative: null }
+      ],
+      hullAssignment: null,
+      guarantee: null,
+      events: [],
+      qqAccounts: []
+    }
+  })
+
+  const historyLine = output.split('\n').find(line => line.startsWith('历史游戏名：'))
+  assert.equal(historyLine, '历史游戏名：旧HTTP名、PROMISE『ˣⁱᵃⁿᵍˢⁱ、相思两行泪ˣᴺ')
+  assert.doesNotMatch(output, /rxiangsiPROMISE|相思两行泪心|未审阅OCR名/)
+})
+
 function resolvedQuery(data) {
   const chain = {
     select() { return chain },

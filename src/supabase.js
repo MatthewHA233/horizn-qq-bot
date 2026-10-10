@@ -274,7 +274,7 @@ export async function getPlayerFullInfo(playerId) {
         .order('join_time', { ascending: true }),
       supabase
         .from('horizn_name_variants')
-        .select('name, is_primary, group_index, last_seen, source')
+        .select('name, is_primary, group_index, last_seen, source, representative')
         .eq('member_id', member.id)
         .order('last_seen', { ascending: false }),
       supabase

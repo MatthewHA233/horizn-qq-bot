@@ -340,8 +340,13 @@ export function formatMemberLookup(result) {
   if (primaryName) lines.push(`游戏名：${primaryName}`)
   lines.push(`玩家ID：${member.player_id}`)
 
-  const historicalNames = [...new Set((nameVariants || []).map(item => item.name))]
-    .filter(name => normalize(name) !== normalize(primaryName))
+  // 历史名只展示可信名：HTTP 精确名 + 历史 OCR 代表名（representative=true）。
+  // representative=false/null 的 OCR 噪声只服务于识别匹配（resolveIdentity），不直接展示。
+  const historicalNames = [...new Set(
+    (nameVariants || [])
+      .filter(item => item.source === 'http' || item.representative === true)
+      .map(item => item.name)
+  )].filter(name => normalize(name) !== normalize(primaryName))
   if (historicalNames.length) lines.push(`历史游戏名：${historicalNames.join('、')}`)
 
   const hull = hullAssignment

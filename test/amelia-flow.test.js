@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 
 import {
   classifyConfirmationReply,
-  shouldContinueAfterSearch
+  shouldContinueAfterSearch,
+  toolStatusText
 } from '../src/amelia.js'
 import {
   buildConfirmMessage,
@@ -367,6 +368,11 @@ test('历史游戏名只展示 HTTP 精确名和 OCR 代表名，不展示 OCR �
   const historyLine = output.split('\n').find(line => line.startsWith('📜 历史游戏名：'))
   assert.equal(historyLine, '📜 历史游戏名：旧HTTP名、PROMISE『ˣⁱᵃⁿᵍˢⁱ、相思两行泪ˣᴺ')
   assert.doesNotMatch(output, /rxiangsiPROMISE|相思两行泪心|未审阅OCR名/)
+})
+
+test('结束会话不发「正在…」状态提示，其他工具照常提示', () => {
+  assert.equal(toolStatusText('end_session'), null)
+  assert.match(toolStatusText('search_member'), /^🔧 正在.+\.\.\.$/)
 })
 
 test('小黄脸 CQ 码拆成 face 消息段，其余保持纯文本', () => {

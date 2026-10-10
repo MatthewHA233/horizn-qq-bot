@@ -55,6 +55,14 @@ export function shouldContinueAfterSearch(text) {
   return /(黑名单|拉黑|解黑|移出黑名单|解除黑名单|取消黑名单|设置舷号|分配舷号|授予舷号|修改舷号|更改舷号|担保进队|担保入队|担保人|取消担保|解除担保)/.test(normalized)
 }
 
+// 瞬时完成、无需「正在…」提示的工具（提示刚发出就撤回会因消息尚未入库而撤回失败）
+const SILENT_TOOLS = new Set(['end_session'])
+
+/** 工具执行前的状态提示文案；返回 null 表示不发提示 */
+export function toolStatusText(toolName) {
+  return SILENT_TOOLS.has(toolName) ? null : `🔧 正在${getToolLabel(toolName)}...`
+}
+
 function buildSystemPrompt() {
   const now = new Date()
   const pad = n => String(n).padStart(2, '0')
@@ -228,7 +236,11 @@ export async function processAmeliaMessage({
 
   const recallMessage = async (msgId) => {
     if (!msgId) return
-    try { await client.deleteMessage(msgId) } catch {}
+    try {
+      await client.deleteMessage(msgId)
+    } catch (err) {
+      console.warn(`[Amelia] 撤回状态消息失败 (${msgId}):`, err.message)
+    }
   }
 
   let session = getSession(userId)
@@ -383,12 +395,12 @@ export async function processAmeliaMessage({
         break
       } else {
         // 普通工具直接执行；需要确认的工具只会在上方挂起
-        const statusMsgId = await sendReply(`🔧 正在${getToolLabel(toolName)}...`)
+        const statusText = toolStatusText(toolName)
+        const statusMsgId = statusText ? await sendReply(statusText) : null
         try {
           const result = await executeAmeliaTool(toolName, args)
-          // end_session：发告别语后关闭会话
+          // end_session：不发「正在…」提示，直接告别并关闭会话
           if (result._endSession) {
-            await recallMessage(statusMsgId)
             await sendReply(result.farewell)
             _endSession(userId, 'dismissed')
             return

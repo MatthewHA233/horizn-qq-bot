@@ -51,7 +51,7 @@ function createFakeClient() {
 }
 
 function createDeps({ boundInInner = false, previousId = null, displayName = null, bound = [], reviewRow = null } = {}) {
-  const calls = { recorded: [], upserted: [], deleted: [], transfers: 0 }
+  const calls = { recorded: [], upserted: [], left: [], transfers: 0 }
   return {
     calls,
     deps: {
@@ -61,7 +61,7 @@ function createDeps({ boundInInner = false, previousId = null, displayName = nul
       async getMemberDisplayName() { return displayName },
       async transferReviewBindings() { calls.transfers++; return { bound, conflicts: [] } },
       async upsertReviewQQMember(args) { calls.upserted.push(args) },
-      async deleteReviewQQMember(qqId) { calls.deleted.push(qqId) }
+      async markReviewQQMemberLeft(qqId, leftAt) { calls.left.push({ qqId, leftAt }) }
     }
   }
 }
@@ -129,7 +129,7 @@ test('新人进群 5 小时内未登记 ID：每次发言不带 ID 都提示重�
   assert.equal(needsIdReminder({ join_time: null, player_id: null }), false)
 })
 
-test('审核群进群登记并 @ 欢迎，退群直接删行，机器人自己进出不处理', async () => {
+test('审核群进群登记并 @ 欢迎，退群只标记退群时间，机器人自己进出不处理', async () => {
   const client = createFakeClient()
   const { deps, calls } = createDeps()
   const config = { botQQId: 3660672216 }
@@ -138,8 +138,8 @@ test('审核群进群登记并 @ 欢迎，退群直接删行，机器人自己�
   assert.equal(calls.upserted[0].qqId, 111222333)
   assert.deepEqual(client.sent, [{ kind: 'at', groupId: 1074579925, userId: 111222333, text: REVIEW_WELCOME_TEXT }])
 
-  await handleReviewGroupNotice({ notice_type: 'group_decrease', group_id: 1074579925, user_id: 111222333 }, client, config, deps)
-  assert.deepEqual(calls.deleted, [111222333])
+  await handleReviewGroupNotice({ notice_type: 'group_decrease', group_id: 1074579925, user_id: 111222333, time: 1763193600 }, client, config, deps)
+  assert.deepEqual(calls.left, [{ qqId: 111222333, leftAt: new Date(1763193600 * 1000).toISOString() }])
 
   await handleReviewGroupNotice({ notice_type: 'group_increase', group_id: 1074579925, user_id: 3660672216 }, client, config, deps)
   assert.equal(calls.upserted.length, 1)

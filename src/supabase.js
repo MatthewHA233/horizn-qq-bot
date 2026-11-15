@@ -143,8 +143,8 @@ export async function syncQQMembers(members) {
 // ── 审核群（新人登记 + 游戏 ID 初绑定）────────────────────────
 
 /**
- * 审核群成员对账：upsert 在群成员，不在名单的直接删行
- * @returns {Promise<{success, upserted, removed}>}
+ * 审核群成员对账：upsert 在群成员（清空退群时间），不在名单的标记退群时间
+ * @returns {Promise<{success, upserted, left}>}
  */
 export async function syncReviewQQMembers(members) {
   if (!supabase) throw new Error('数据库未初始化')
@@ -154,7 +154,7 @@ export async function syncReviewQQMembers(members) {
 }
 
 /**
- * 新人进审核群：登记一行（已存在则只刷新名片）
+ * 新人进审核群：登记一行；退群后再进群则刷新入群时间并清空退群时间（保留之前自报的 ID）
  */
 export async function upsertReviewQQMember({ qqId, nickname, card, joinTime }) {
   if (!supabase) throw new Error('数据库未初始化')
@@ -165,6 +165,7 @@ export async function upsertReviewQQMember({ qqId, nickname, card, joinTime }) {
       nickname: nickname || null,
       card: card || null,
       join_time: joinTime || new Date().toISOString(),
+      left_at: null,
       updated_at: new Date().toISOString()
     }, { onConflict: 'qq_id' })
   if (error) throw new Error(`审核群登记失败: ${error.message}`)
@@ -185,12 +186,15 @@ export async function getReviewQQMember(qqId) {
 }
 
 /**
- * 退审核群：直接删行
+ * 退审核群：只标记退群时间，保留行（自报 ID 等）供历史查询
  */
-export async function deleteReviewQQMember(qqId) {
+export async function markReviewQQMemberLeft(qqId, leftAt = new Date().toISOString()) {
   if (!supabase) throw new Error('数据库未初始化')
-  const { error } = await supabase.from('horizn_review_qq_accounts').delete().eq('qq_id', qqId)
-  if (error) throw new Error(`审核群删除失败: ${error.message}`)
+  const { error } = await supabase
+    .from('horizn_review_qq_accounts')
+    .update({ left_at: leftAt, updated_at: new Date().toISOString() })
+    .eq('qq_id', qqId)
+  if (error) throw new Error(`审核群退群标记失败: ${error.message}`)
 }
 
 /**
@@ -216,6 +220,7 @@ export async function recordReviewPlayerId({ qqId, nickname, card, playerId }) {
       player_id: playerId,
       player_id_at: now,
       transferred_at: null,
+      left_at: null,
       updated_at: now
     }, { onConflict: 'qq_id' })
   if (error) throw new Error(`初绑定写入失败: ${error.message}`)

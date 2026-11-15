@@ -3,15 +3,15 @@
  * - 新人进群 → @他请发游戏 ID
  * - 新人发出含 ID 的消息 → 记为初绑定；已在内群则立即按 QQ 号转入内群自动绑定
  * - 进群 5 小时内还没登记 ID 的新人，每次发言不带 ID 都提示格式不对、请重发
- * - 退群 → 直接删行（不像内群那样保留退群时间）
+ * - 退群 → 标记退群时间（保留行，供历史查询；再次进群清空）
  * - 每 20 分钟对账一次，补上漏收的进退群事件
  */
 import { extractPlayerIds } from './playerId.js'
 import {
-  deleteReviewQQMember,
   getMemberDisplayName,
   getReviewQQMember,
   isBoundInInnerGroup,
+  markReviewQQMemberLeft,
   recordReviewPlayerId,
   syncReviewQQMembers,
   transferReviewBindings,
@@ -33,10 +33,10 @@ export const REVIEW_ID_RETRY_TEXT =
   `ID格式不对，请重新发一下。游戏ID是12~16位字母数字组合，例如七宝队长的ID：${REVIEW_EXAMPLE_PLAYER_ID}`
 
 const defaultDeps = {
-  deleteReviewQQMember,
   getMemberDisplayName,
   getReviewQQMember,
   isBoundInInnerGroup,
+  markReviewQQMemberLeft,
   recordReviewPlayerId,
   transferReviewBindings,
   upsertReviewQQMember
@@ -84,10 +84,11 @@ export async function handleReviewGroupNotice(event, client, config, deps = defa
 
   if (event.notice_type === 'group_decrease') {
     try {
-      await deps.deleteReviewQQMember(qqId)
-      console.log(`[审核群] 退群删除: ${qqId}`)
+      const leftAt = event.time ? new Date(event.time * 1000).toISOString() : undefined
+      await deps.markReviewQQMemberLeft(qqId, leftAt)
+      console.log(`[审核群] 退群标记: ${qqId}`)
     } catch (err) {
-      console.error(`[审核群] 退群删除失败 (${qqId}):`, err.message)
+      console.error(`[审核群] 退群标记失败 (${qqId}):`, err.message)
     }
   }
 }
@@ -153,10 +154,10 @@ export async function handleReviewGroupMessage(event, client, text, deps = defau
 
 async function syncReviewOnce(client, groupId) {
   try {
-    // 小群直接绕过缓存：缓存缺人会被当成退群删掉自报 ID
+    // 小群直接绕过缓存：缓存缺人会被误标成退群
     const members = await client.getGroupMemberList(groupId, { noCache: true })
     const result = await syncReviewQQMembers(members)
-    console.log(`[审核群同步] 在群 ${result.upserted} 人，删除已退群 ${result.removed} 行`)
+    console.log(`[审核群同步] 在群 ${result.upserted} 人，新标记退群 ${result.left} 人`)
   } catch (err) {
     console.error('[审核群同步] 失败:', err.message)
   }

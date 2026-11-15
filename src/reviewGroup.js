@@ -24,8 +24,7 @@ const ID_REMINDER_WINDOW_MS = 5 * 60 * 60 * 1000 // 进群 5 小时内催报 ID
 // 群主/管理员在审核群贴别人的 ID 是在审人，不能记到自己 QQ 上
 const ADMIN_ROLES = new Set(['owner', 'admin'])
 
-export const REVIEW_WELCOME_TEXT =
-  '欢迎来到HORIZON地平线！请直接发送你的游戏ID（12~16位字母数字组合），我会帮你登记，进入联队内群后自动完成绑定。'
+export const REVIEW_WELCOME_TEXT = '欢迎来到HORIZON地平线！请发一下你的游戏ID（12~16位字母数字组合）'
 
 // 新人第一次没发对就给示例：七宝队长（地平线『No.000』柒宝）的 ID
 export const REVIEW_EXAMPLE_PLAYER_ID = '4AA67B15FC3585E7'
@@ -44,13 +43,11 @@ const defaultDeps = {
 }
 
 /**
- * 登记成功后的回复文案
+ * 登记成功后的回复文案（不提内群绑定，绑定在后台静默完成）
  */
-export function buildReviewIdReply({ playerId, previousId, displayName, transferred }) {
+export function buildReviewIdReply({ playerId, previousId, displayName }) {
   const head = previousId && previousId !== playerId ? `已更新游戏ID：${playerId}` : `已登记游戏ID：${playerId}`
-  const who = displayName ? `（识别为「${displayName}」）` : '（联队成员库暂未找到，入队后会自动匹配）'
-  const tail = transferred ? '你已在内群，已自动完成绑定。' : '进入联队内群后会自动完成绑定。'
-  return `${head}${who}\n${tail}`
+  return displayName ? `${head}（识别为「${displayName}」）` : head
 }
 
 /**
@@ -139,13 +136,12 @@ export async function handleReviewGroupMessage(event, client, text, deps = defau
     })
     const displayName = await deps.getMemberDisplayName(playerId)
     const { bound, conflicts } = await deps.transferReviewBindings()
-    const transferred = bound.some(item => Number(item.qq_id) === Number(senderId))
     if (bound.length) console.log(`[审核群] 初绑定转入内群: ${bound.map(b => `${b.qq_id}→${b.player_id}`).join(', ')}`)
     if (conflicts.length) console.warn(`[审核群] 内群已有不同绑定，未覆盖: ${conflicts.map(c => `${c.qq_id}→${c.player_id}`).join(', ')}`)
 
     console.log(`[审核群] ${senderCard || senderNickname}(${senderId}) 登记 ID ${playerId}${previousId && previousId !== playerId ? `（原 ${previousId}）` : ''}`)
     await client.replyGroupMessageWithAt(groupId, event.message_id, senderId,
-      buildReviewIdReply({ playerId, previousId, displayName, transferred }))
+      buildReviewIdReply({ playerId, previousId, displayName }))
     return true
   } catch (err) {
     console.error(`[审核群] 登记 ID 失败 (${senderId}):`, err.message)

@@ -25,14 +25,19 @@ test('player_id 识别：游戏名片段不再误判，13-16 位十六进制正�
   assert.equal(isPlayerId('STS1508'), false)
 })
 
-test('审核群登记回复区分新登记 / 改报 / 未入库 / 已转入内群', () => {
+test('审核群登记回复区分新登记 / 改报，库里有名字才附识别名，不提内群绑定', () => {
+  assert.equal(REVIEW_WELCOME_TEXT, '欢迎来到HORIZON地平线！请发一下你的游戏ID（12~16位字母数字组合）')
   assert.equal(
-    buildReviewIdReply({ playerId: 'C86DA773478609A5', previousId: null, displayName: '晨不昏', transferred: false }),
-    '已登记游戏ID：C86DA773478609A5（识别为「晨不昏」）\n进入联队内群后会自动完成绑定。'
+    buildReviewIdReply({ playerId: 'C86DA773478609A5', previousId: null, displayName: '晨不昏' }),
+    '已登记游戏ID：C86DA773478609A5（识别为「晨不昏」）'
   )
   assert.equal(
-    buildReviewIdReply({ playerId: 'C86DA773478609A5', previousId: 'B8FE50545EB633EA', displayName: null, transferred: true }),
-    '已更新游戏ID：C86DA773478609A5（联队成员库暂未找到，入队后会自动匹配）\n你已在内群，已自动完成绑定。'
+    buildReviewIdReply({ playerId: 'C86DA773478609A5', previousId: 'B8FE50545EB633EA', displayName: null }),
+    '已更新游戏ID：C86DA773478609A5'
+  )
+  assert.equal(
+    buildReviewIdReply({ playerId: 'C86DA773478609A5', previousId: 'C86DA773478609A5', displayName: null }),
+    '已登记游戏ID：C86DA773478609A5'
   )
 })
 
@@ -77,7 +82,7 @@ test('审核群新人报 ID：登记初绑定、立即尝试转入内群并回�
   assert.deepEqual(calls.recorded, [{ qqId: 3650262251, nickname: 'n', card: '新人', playerId: 'AA6ADD330EDCE6B7' }])
   assert.equal(calls.transfers, 1)
   assert.equal(client.sent.length, 1)
-  assert.match(client.sent[0].text, /已登记游戏ID：AA6ADD330EDCE6B7（识别为「星辰大海」）\n你已在内群，已自动完成绑定。/)
+  assert.equal(client.sent[0].text, '已登记游戏ID：AA6ADD330EDCE6B7（识别为「星辰大海」）')
 })
 
 test('审核群管理员或内群已绑定成员贴 ID 不登记，无 ID 的闲聊不回复', async () => {

@@ -239,6 +239,26 @@ export async function transferReviewBindings() {
 }
 
 /**
+ * 成员的审核群记录：自报 ID 为该成员，或 QQ 号与其内群 QQ（含已离群）相同
+ * @param {string} playerId
+ * @param {Array<{qq_id: number}>} innerAccounts
+ * @returns {Promise<Array<{qq_id, nickname, card, join_time, left_at}>>}
+ */
+export async function getMemberReviewAccounts(playerId, innerAccounts = []) {
+  if (!supabase) throw new Error('数据库未初始化')
+  const qqIds = innerAccounts.map(account => Number(account.qq_id)).filter(Number.isSafeInteger)
+  const filters = [`player_id.eq.${playerId}`]
+  if (qqIds.length) filters.push(`qq_id.in.(${qqIds.join(',')})`)
+  const { data, error } = await supabase
+    .from('horizn_review_qq_accounts')
+    .select('qq_id, nickname, card, join_time, left_at')
+    .or(filters.join(','))
+    .order('join_time', { ascending: true })
+  if (error) throw new Error(`审核群记录查询失败: ${error.message}`)
+  return data || []
+}
+
+/**
  * QQ 是否已在内群绑定游戏成员（在群且 member_id 非空）
  */
 export async function isBoundInInnerGroup(qqId) {
@@ -437,6 +457,7 @@ export async function getPlayerFullInfo(playerId) {
     }
 
     const nameVariants = sortNameVariants(nameResult.data || [])
+    const reviewAccounts = await getMemberReviewAccounts(member.player_id, qqResult.data || [])
 
     return {
       found: 'member',
@@ -446,7 +467,8 @@ export async function getPlayerFullInfo(playerId) {
       hullAssignment: hullResult.data?.[0] || null,
       guarantee: guaranteeResult.data?.[0] || null,
       events: eventsResult.data || [],
-      qqAccounts: qqResult.data || []
+      qqAccounts: qqResult.data || [],
+      reviewAccounts
     }
   }
 

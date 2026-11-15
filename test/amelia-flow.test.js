@@ -428,6 +428,38 @@ test('完整成员档案每行带图标，小黄脸按定稿 id 发送', () => {
   assert.match(plain, /离队（被踢）/)
 })
 
+test('成员档案内群后带审核群：在群显示名片，退群显示退群时间，无记录不显示', () => {
+  const build = (qqAccounts, reviewAccounts) => stripQQFaces(formatMemberLookup({
+    type: 'member',
+    query: '9F5E9E6E1A2B3C4D',
+    matched: [{ type: 'player_id', value: '9F5E9E6E1A2B3C4D' }],
+    info: {
+      found: 'member',
+      member: { player_id: '9F5E9E6E1A2B3C4D', active: true, is_blacklisted: false },
+      primaryName: '新人甲',
+      nameVariants: [],
+      hullAssignment: null,
+      guarantee: null,
+      events: [],
+      qqAccounts,
+      reviewAccounts
+    }
+  })).split('\n')
+
+  const inReview = build([], [{ qq_id: 10001, card: '新人甲', join_time: '2026-11-10T12:00:00+08:00', left_at: null }])
+  const innerIndex = inReview.findIndex(line => line.includes('内群：不在内群'))
+  assert.equal(inReview[innerIndex + 1], '审核群：新人甲（10001，2026.11.10入群）')
+
+  const leftReview = build(
+    [{ qq_id: 10001, card: '新人甲', join_time: '2026-11-12', left_at: null }],
+    [{ qq_id: 10001, card: '新人甲', join_time: '2026-11-10', left_at: '2026-11-13T10:00:00+08:00' }]
+  )
+  assert.ok(leftReview.includes('审核群：不在审核群（退群 2026.11.13，曾用 新人甲（10001））'))
+
+  assert.ok(!build([], []).some(line => line.includes('审核群')))
+  assert.ok(!build([], undefined).some(line => line.includes('审核群')))
+})
+
 function resolvedQuery(data) {
   const chain = {
     select() { return chain },

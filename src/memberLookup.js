@@ -407,6 +407,21 @@ export function formatMemberLookup(result) {
     lines.push(`${ICON.qq} 内群：不在内群`)
   }
 
+  // 审核群：无记录不显示（审核群登记上线前进队的老成员都没有记录）
+  const reviewAccounts = result.info.reviewAccounts || []
+  const inReview = reviewAccounts.filter(account => !account.left_at)
+  if (inReview.length) {
+    for (const account of inReview) {
+      const name = account.card || account.nickname || String(account.qq_id)
+      const joined = account.join_time ? `，${fmtDate(account.join_time)}入群` : ''
+      lines.push(`${ICON.qq} 审核群：${name}（${account.qq_id}${joined}）`)
+    }
+  } else if (reviewAccounts.length) {
+    const latest = [...reviewAccounts].sort((a, b) => new Date(b.left_at) - new Date(a.left_at))[0]
+    const name = latest.card || latest.nickname || String(latest.qq_id)
+    lines.push(`${ICON.qq} 审核群：不在审核群（退群 ${fmtDate(latest.left_at)}，曾用 ${name}（${latest.qq_id}））`)
+  }
+
   if (result.activity) {
     lines.push(`${ICON.activity} 最新活跃度（${formatActivityTime(result.activity.sessionTime)}）：`)
     lines.push(`    周活跃度 ${result.activity.weekly} | 赛季活跃度 ${result.activity.season}`)

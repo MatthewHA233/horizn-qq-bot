@@ -93,6 +93,8 @@ async function handleGroupMessage(event, client, config) {
 
   // ── 审核群：只做新人游戏 ID 登记，不走查询和艾米莉亚 ──────────
   if (config.reviewGroupId && groupId === config.reviewGroupId) {
+    // 机器人自己的消息若被回推，不能回复自己（会"ID格式不对"死循环）
+    if (botQQId && String(senderId) === String(botQQId)) return
     await handleReviewGroupMessage(event, client, extractTextFromMessage(event.message))
     return
   }

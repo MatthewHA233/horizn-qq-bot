@@ -8,6 +8,7 @@ import {
   sortNameVariants
 } from './supabase.js'
 import { qqFace } from './qqFace.js'
+import { isPlayerId } from './playerId.js'
 
 const SEP = '────────────────'
 const SEARCH_LIMIT = 8
@@ -40,10 +41,6 @@ const ICON = Object.freeze({
 
 function normalize(value) {
   return String(value ?? '').normalize('NFKC').trim().toLocaleLowerCase('zh-CN')
-}
-
-function isPlayerId(value) {
-  return /^[a-z0-9]{6,16}$/i.test(value) && /[a-z]/i.test(value) && /\d/.test(value)
 }
 
 function isQQNumber(value) {

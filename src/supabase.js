@@ -140,6 +140,136 @@ export async function syncQQMembers(members) {
   return data
 }
 
+// ── 审核群（新人登记 + 游戏 ID 初绑定）────────────────────────
+
+/**
+ * 审核群成员对账：upsert 在群成员，不在名单的直接删行
+ * @returns {Promise<{success, upserted, removed}>}
+ */
+export async function syncReviewQQMembers(members) {
+  if (!supabase) throw new Error('数据库未初始化')
+  const { data, error } = await supabase.rpc('horizn_sync_review_qq_members', { p_members: members })
+  if (error) throw new Error(`审核群同步失败: ${error.message}`)
+  return data
+}
+
+/**
+ * 新人进审核群：登记一行（已存在则只刷新名片）
+ */
+export async function upsertReviewQQMember({ qqId, nickname, card, joinTime }) {
+  if (!supabase) throw new Error('数据库未初始化')
+  const { error } = await supabase
+    .from('horizn_review_qq_accounts')
+    .upsert({
+      qq_id: qqId,
+      nickname: nickname || null,
+      card: card || null,
+      join_time: joinTime || new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    }, { onConflict: 'qq_id' })
+  if (error) throw new Error(`审核群登记失败: ${error.message}`)
+}
+
+/**
+ * 读取审核群成员的登记状态（入群时间 + 自报 ID）；无记录返回 null
+ */
+export async function getReviewQQMember(qqId) {
+  if (!supabase) throw new Error('数据库未初始化')
+  const { data, error } = await supabase
+    .from('horizn_review_qq_accounts')
+    .select('join_time, player_id')
+    .eq('qq_id', qqId)
+    .maybeSingle()
+  if (error) throw new Error(`审核群记录读取失败: ${error.message}`)
+  return data
+}
+
+/**
+ * 退审核群：直接删行
+ */
+export async function deleteReviewQQMember(qqId) {
+  if (!supabase) throw new Error('数据库未初始化')
+  const { error } = await supabase.from('horizn_review_qq_accounts').delete().eq('qq_id', qqId)
+  if (error) throw new Error(`审核群删除失败: ${error.message}`)
+}
+
+/**
+ * 记录新人自报的游戏 ID（初绑定）；改报时清空转入标记以便重新转入内群
+ * @returns {Promise<string|null>} 之前登记的 ID（无则 null）
+ */
+export async function recordReviewPlayerId({ qqId, nickname, card, playerId }) {
+  if (!supabase) throw new Error('数据库未初始化')
+  const { data: existing, error: readError } = await supabase
+    .from('horizn_review_qq_accounts')
+    .select('player_id')
+    .eq('qq_id', qqId)
+    .maybeSingle()
+  if (readError) throw new Error(`读取初绑定失败: ${readError.message}`)
+
+  const now = new Date().toISOString()
+  const { error } = await supabase
+    .from('horizn_review_qq_accounts')
+    .upsert({
+      qq_id: qqId,
+      nickname: nickname || null,
+      card: card || null,
+      player_id: playerId,
+      player_id_at: now,
+      transferred_at: null,
+      updated_at: now
+    }, { onConflict: 'qq_id' })
+  if (error) throw new Error(`初绑定写入失败: ${error.message}`)
+  return existing?.player_id || null
+}
+
+/**
+ * 把审核群初绑定按 QQ 号转入内群自动绑定
+ * @returns {Promise<{bound: Array<{qq_id, player_id}>, conflicts: Array<{qq_id, player_id}>}>}
+ */
+export async function transferReviewBindings() {
+  if (!supabase) throw new Error('数据库未初始化')
+  const { data, error } = await supabase.rpc('horizn_transfer_review_bindings')
+  if (error) throw new Error(`初绑定转入内群失败: ${error.message}`)
+  return { bound: data?.bound || [], conflicts: data?.conflicts || [] }
+}
+
+/**
+ * QQ 是否已在内群绑定游戏成员（在群且 member_id 非空）
+ */
+export async function isBoundInInnerGroup(qqId) {
+  if (!supabase) throw new Error('数据库未初始化')
+  const { data, error } = await supabase
+    .from('horizn_qq_accounts')
+    .select('member_id')
+    .eq('qq_id', qqId)
+    .is('left_at', null)
+    .not('member_id', 'is', null)
+    .limit(1)
+  if (error) throw new Error(`内群绑定查询失败: ${error.message}`)
+  return (data || []).length > 0
+}
+
+/**
+ * 按 player_id 取成员当前展示名（HTTP 可信名优先）；不在成员库返回 null
+ */
+export async function getMemberDisplayName(playerId) {
+  if (!supabase) throw new Error('数据库未初始化')
+  const { data: members, error } = await supabase
+    .from('horizn_members')
+    .select('id')
+    .eq('player_id', playerId)
+    .limit(1)
+  if (error) throw new Error(`成员查询失败: ${error.message}`)
+  if (!members?.length) return null
+
+  const { data: names, error: nameError } = await supabase
+    .from('horizn_name_variants')
+    .select('name, is_primary, group_index, last_seen, source')
+    .eq('member_id', members[0].id)
+  if (nameError) throw new Error(`名字查询失败: ${nameError.message}`)
+  return sortNameVariants(names || [])[0]?.name || playerId
+}
+
 /**
  * 获取全体现役成员的名字和编号映射表
  * 用于脚本号检测时附加成员信息

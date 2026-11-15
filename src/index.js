@@ -20,6 +20,7 @@ import { initSupabase, resolveSupabaseServiceKey } from './supabase.js'
 import { createMessageHandler } from './handler.js'
 import { startSyncLoop } from './sync.js'
 import { startDailyReport } from './reporter.js'
+import { startReviewSyncLoop } from './reviewGroup.js'
 
 // 配置检查
 const requiredEnvs = ['NAPCAT_WS_URL', 'SUPABASE_URL']
@@ -42,6 +43,8 @@ const listenGroups = parseNumberList(process.env.LISTEN_GROUPS)
 const allowPrivateUsers = parseNumberList(process.env.ALLOW_PRIVATE_USERS)
 const syncGroupId = process.env.QQ_GROUP_ID ? parseInt(process.env.QQ_GROUP_ID) : null
 const reportGroupId = process.env.REPORT_GROUP_ID ? parseInt(process.env.REPORT_GROUP_ID) : syncGroupId
+// 审核群：新人进群请报游戏 ID（初绑定），进内群后自动绑定
+const reviewGroupId = process.env.REVIEW_GROUP_ID ? parseInt(process.env.REVIEW_GROUP_ID) : null
 // 艾米莉亚 AI 聊天模式启用的管理群（支持多群）
 const ameliaGroups = process.env.AMELIA_GROUPS
   ? parseNumberList(process.env.AMELIA_GROUPS)
@@ -66,7 +69,7 @@ async function main() {
   })
 
   // 3. 注册消息处理器（botQQId 登录后再填入）
-  const config = { listenGroups, allowPrivateUsers, syncGroupId, ameliaGroups, botQQId: null }
+  const config = { listenGroups, allowPrivateUsers, syncGroupId, ameliaGroups, reviewGroupId, botQQId: null }
   const handler = createMessageHandler(client, config)
   client.onMessage(handler)
 
@@ -98,6 +101,12 @@ async function main() {
       startDailyReport(client, reportGroupId)
     } else {
       console.log('[启动] 未配置 QQ_GROUP_ID，跳过群成员同步和每日播报')
+    }
+
+    if (reviewGroupId) {
+      startReviewSyncLoop(client, reviewGroupId)
+    } else {
+      console.log('[启动] 未配置 REVIEW_GROUP_ID，不处理审核群')
     }
 
     console.log()

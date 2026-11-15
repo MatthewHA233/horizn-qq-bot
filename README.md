@@ -6,7 +6,10 @@ HORIZN 联队管理机器人，包含普通 player_id 查询、QQ群成员同步
 
 - 监听 QQ 群消息（支持多个群）
 - 支持私聊查询（白名单 QQ 号）
-- 普通群聊/私聊自动识别 player_id（大写字母+数字混合，6-16位）
+- 普通群聊/私聊自动识别 player_id（12-16 位十六进制且含数字，大小写不敏感；规则见 `src/playerId.js`）
+- 审核群（`REVIEW_GROUP_ID`）：新人进群自动 @ 欢迎并请报游戏 ID，记为初绑定（表 `horizn_review_qq_accounts`）；
+  进群 5 小时内未登记的新人，每次发言不带 ID 都会提示格式不对、请重发；
+  此人进入内群后按 QQ 号自动绑定内群（只填未绑定的，不覆盖手动绑定）；退审核群直接删行，每 20 分钟对账一次
 - @艾米莉亚后可按玩家 ID、QQ号、QQ群名片/昵称、当前游戏名或任意历史游戏名查询
 - 唯一匹配后统一返回完整成员档案：当前名与历史名、玩家ID、编号、舷号、状态、QQ群绑定、最新活跃度、入离队历史和黑名单
 - 支持QQ群成员定时同步、舷号和黑名单管理
@@ -28,8 +31,11 @@ cp .env.example .env
 2. 编辑 `.env` 文件：
 ```env
 # NapCat WebSocket 配置
-NAPCAT_WS_URL=ws://47.120.77.124:3452
-NAPCAT_TOKEN=napcat1234567
+NAPCAT_WS_URL=ws://your-napcat-host:3452
+NAPCAT_TOKEN=your-napcat-token
+
+# 审核群群号（留空则不处理审核群）
+REVIEW_GROUP_ID=
 
 # 监听的 QQ 群号（多个用逗号分隔，留空则不监听群消息）
 LISTEN_GROUPS=123456789,987654321
@@ -69,7 +75,7 @@ SUPABASE_SERVICE_KEY=eyJxxx...
     "enable": false,
     "urls": []
   },
-  "token": "napcat1234567",
+  "token": "your-napcat-token",
   "debug": false,
   "heartInterval": 30000,
   "messagePostFormat": "array"

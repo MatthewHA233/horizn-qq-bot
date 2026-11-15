@@ -174,6 +174,17 @@ export class NapCatClient {
   }
 
   /**
+   * 发送群消息（@指定成员 + 内容，不引用）
+   */
+  async sendGroupMessageWithAt(groupId, userId, text) {
+    const message = [
+      { type: 'at', data: { qq: String(userId) } },
+      ...textToSegments(' ' + text)
+    ]
+    return this.sendGroupMessage(groupId, message)
+  }
+
+  /**
    * 发送私聊消息
    */
   async sendPrivateMessage(userId, message) {
@@ -203,9 +214,10 @@ export class NapCatClient {
 
   /**
    * 获取 QQ 群成员列表
+   * @param {{noCache?: boolean}} options - noCache 绕过 NapCat 缓存（新人刚进群时缓存里可能还没有）
    */
-  async getGroupMemberList(groupId) {
-    const data = await this.callApi('get_group_member_list', { group_id: groupId })
+  async getGroupMemberList(groupId, { noCache = false } = {}) {
+    const data = await this.callApi('get_group_member_list', { group_id: groupId, no_cache: noCache })
     return data.map(m => ({
       qq_id: m.user_id,
       nickname: m.nickname || '',

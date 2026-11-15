@@ -6,6 +6,9 @@
 import { formatMemberLookup, lookupMember } from './memberLookup.js'
 import { runReportForDate } from './reporter.js'
 import { processAmeliaMessage, hasActiveSession } from './amelia.js'
+import { extractPlayerIds } from './playerId.js'
+import { handleReviewGroupMessage, handleReviewGroupNotice } from './reviewGroup.js'
+import { scheduleInnerSync } from './sync.js'
 
 // ── 群聊消息缓存（用于艾米莉亚上下文）─────────────────────────
 // groupId → [{userId, name, text}]  最多保留 20 条
@@ -30,22 +33,6 @@ function hasAtMention(message, botQQId) {
 function stripAtMention(text) {
   // 去掉文本中的 @xxx 前缀和多余空格
   return text.replace(/^@\S+\s*/, '').trim()
-}
-
-/**
- * player_id 正则表达式
- * 规则：大写字母和数字混杂，6-16位，必须同时包含两者
- */
-const PLAYER_ID_PATTERN = /\b(?=[A-Z0-9]{6,16}\b)(?=[A-Z]*[0-9])(?=[0-9]*[A-Z])[A-Z0-9]{6,16}\b/g
-
-/**
- * 从消息文本中提取 player_id
- */
-export function extractPlayerIds(text) {
-  if (!text || typeof text !== 'string') return []
-  const matches = text.match(PLAYER_ID_PATTERN)
-  if (!matches) return []
-  return [...new Set(matches)]
 }
 
 /**
@@ -103,6 +90,12 @@ async function handleGroupMessage(event, client, config) {
   const messageId = event.message_id
   const senderId = event.sender?.user_id
   const senderName = event.sender?.card || event.sender?.nickname || '未知'
+
+  // ── 审核群：只做新人游戏 ID 登记，不走查询和艾米莉亚 ──────────
+  if (config.reviewGroupId && groupId === config.reviewGroupId) {
+    await handleReviewGroupMessage(event, client, extractTextFromMessage(event.message))
+    return
+  }
 
   if (listenGroups.size === 0 || !listenGroups.has(groupId)) return
 
@@ -217,9 +210,27 @@ async function handlePrivateMessage(event, client, config) {
 }
 
 /**
+ * 处理群成员进退群通知
+ */
+async function handleGroupNotice(event, client, config) {
+  if (event.notice_type !== 'group_increase' && event.notice_type !== 'group_decrease') return
+
+  if (config.reviewGroupId && event.group_id === config.reviewGroupId) {
+    await handleReviewGroupNotice(event, client, config)
+  } else if (config.syncGroupId && event.group_id === config.syncGroupId && event.notice_type === 'group_increase') {
+    // 新人进内群：尽快同步，审核群初绑定随之转入
+    scheduleInnerSync()
+  }
+}
+
+/**
  * 处理消息事件
  */
 export async function handleMessage(event, client, config) {
+  if (event.post_type === 'notice') {
+    await handleGroupNotice(event, client, config)
+    return
+  }
   if (event.post_type !== 'message') return
 
   if (event.message_type === 'group') {

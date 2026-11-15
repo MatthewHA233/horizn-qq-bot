@@ -26,7 +26,7 @@ test('player_id 识别：游戏名片段不再误判，13-16 位十六进制正�
 })
 
 test('审核群登记回复区分新登记 / 改报，库里有名字才附识别名，不提内群绑定', () => {
-  assert.equal(REVIEW_WELCOME_TEXT, '欢迎来到HORIZON地平线！请发一下你的游戏ID（12~16位字母数字组合）')
+  assert.equal(REVIEW_WELCOME_TEXT, '欢迎来到Horizon地平线！请发一下你的游戏ID（12~16位字母数字组合）')
   assert.equal(
     buildReviewIdReply({ playerId: 'C86DA773478609A5', previousId: null, displayName: '晨不昏' }),
     '已登记游戏ID：C86DA773478609A5（识别为「晨不昏」）'
